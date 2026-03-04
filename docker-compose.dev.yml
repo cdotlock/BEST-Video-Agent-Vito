@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: agent-forge-db-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 12345678
+      POSTGRES_DB: agent_forge
+    ports:
+      - "${DB_PORT:-55432}:5432"
+    volumes:
+      - agent_forge_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    container_name: agent-forge-app-dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+      args:
+        PNPM_REGISTRY: ${PNPM_REGISTRY:-https://registry.npmmirror.com}
+    image: agent-forge:dev
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8001"
+      DATABASE_URL: postgresql://postgres:12345678@db:5432/agent_forge
+      BUSINESS_DATABASE_URL: postgresql://postgres:12345678@db:5432/biz
+      PRISMA_SCHEMA_SYNC_MODE: "migrate"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-8001}:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8001/ || exit 1"]
+      start_period: 30s
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  agent_forge_postgres_data:
