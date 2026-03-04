@@ -92,7 +92,7 @@ export default function VideoWorkflowPage() {
   const [injectedMessage, setInjectedMessage] = useState<{ id: string; text: string } | null>(null);
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
-  const [styleInitOpenSignal, setStyleInitOpenSignal] = useState(0);
+  const [styleInitOpenSignal, setStyleInitOpenSignal] = useState<number | undefined>(undefined);
   const [openMenuKeys, setOpenMenuKeys] = useState<string[]>(["create"]);
   const [memoryUser] = useState(() => {
     if (typeof window === "undefined") return "default";
@@ -153,7 +153,7 @@ export default function VideoWorkflowPage() {
       void message.warning("请先上传或选择一个序列。");
       return;
     }
-    setStyleInitOpenSignal((prev) => prev + 1);
+    setStyleInitOpenSignal((prev) => (prev ?? 0) + 1);
   }, [data.selectedSequence, message]);
 
   const openSequencePanel = useCallback(() => {
