@@ -44,12 +44,16 @@
 1. 支持记录风格偏好反馈。
 2. 支持读取风格推荐默认值（查询词、风格 token、偏好图库）。
 3. 支持清理某个 `memoryUser` 的记忆数据。
+4. 支持流程路径推荐（按目标与历史偏好返回 Top 路径）。
+5. 支持路径评审写回（强化/抑制后续路径推荐）。
 
 对应 API：
 
 1. `POST /api/video/memory/feedback`
 2. `GET /api/video/memory/recommendations`
-3. `DELETE /api/video/memory`
+3. `GET /api/video/memory/path-recommendations`
+4. `POST /api/video/memory/path-review`
+5. `DELETE /api/video/memory`
 
 ## 1.5 素材工作台能力
 
@@ -57,8 +61,31 @@
 2. 支持资源搜索、类型筛选、删除、JSON 编辑。
 3. Storyboard 视图支持快捷操作：复制 prompt、继续生成、设为风格参考。
 4. Timeline 视图展示任务关键事件。
+5. Clip 视图支持最简剪辑：片段排序、in/out、转场，并保存拼接计划。
+6. `/video/[projectId]` 已重构为白色三栏工作台：
+   - 左侧：导航菜单 + 序列/会话
+   - 中间：新手引导 + 主创作视图
+   - 右侧：素材分组面板
 
-## 1.6 Docker 开发启动能力
+## 1.6 自进化路径能力（A2/A3）
+
+1. `video_memory` 新增路径推荐与路径评审工具：
+   - `video_memory__recommend_paths`
+   - `video_memory__review_path`
+2. `video_mgr` 新增分镜与拼接原子工具：
+   - `video_mgr__generate_storyboard_grid`（四宫格/九宫格）
+   - `video_mgr__save_clip_plan`（保存拼接方案）
+3. `video_mgr__generate_video` 支持策略化输入：
+   - `prompt_only`
+   - `first_frame`
+   - `first_last_frame`
+   - `mixed_refs`
+4. 图/视频生成支持“角色化参考输入”：
+   - 角色：`style_ref / scene_ref / empty_shot_ref / character_ref / motion_ref`
+   - 支持与 legacy `referenceImageUrls/referenceVideoUrls` 混合传入
+   - 服务端合并去重后写入 `domain_resources.data` 供后续 review
+
+## 1.7 Docker 开发启动能力
 
 1. `docker-compose.dev.yml` 支持同时启动 `db + app`。
 2. 默认 `app` 对外端口为 `8001`。
@@ -125,12 +152,11 @@ docker compose -f docker-compose.dev.yml down
 
 1. 打开 `/video`，创建一个新项目。
 2. 进入项目页后，先上传一个 `.md/.txt` 序列文件。
-3. 在顶部打开 `Style Init`。
-4. 输入关键词搜图，勾选参考图，执行反推。
-5. 应用生成的 Style Profile 到当前序列。
-6. 选择 `Checkpoint` 或 `YOLO` 模式。
-7. 在聊天框发送生成指令。
-8. 在右侧素材区和 Storyboard 里复用结果继续迭代。
+3. 按引导卡 4 步执行：上传序列 -> 风格确认 -> 开始生成 -> 保存拼接计划。
+4. 在 `Style Init` 中输入关键词搜图，勾选参考图，执行反推并应用 profile。
+5. 选择 `Checkpoint` 或 `YOLO` 模式（YOLO 不做中间确认）。
+6. 在聊天框发送生成指令，观察 Timeline 与 Storyboard。
+7. 在 Clip 视图设置片段顺序/in-out/转场，保存拼接计划。
 
 ## 4. 主要接口入参示例
 
@@ -180,4 +206,3 @@ docker compose -f docker-compose.dev.yml down
 2. UIUX 重构方案：`docs/UIUX.md`
 3. 接口时序与验证：`docs/api-playbook.md`
 4. 用例验证：`docs/useCase/`
-

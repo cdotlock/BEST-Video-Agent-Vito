@@ -18,6 +18,7 @@ import { MessageList } from "@/app/components/MessageList";
 import { useImageUpload } from "@/app/components/hooks/useImageUpload";
 import { useModels } from "@/app/components/hooks/useModels";
 import { useVideoChat } from "../hooks/useVideoChat";
+import { ClipComposer } from "./ClipComposer";
 import type {
   DomainResource,
   DomainResources,
@@ -49,6 +50,7 @@ export interface VideoChatProps {
   memoryUser: string;
   view: WorkspaceView;
   resources: DomainResources | null;
+  sequenceId: string | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -175,6 +177,7 @@ export function VideoChat({
   memoryUser,
   view,
   resources,
+  sequenceId,
 }: VideoChatProps) {
   const { message } = App.useApp();
   const userName = videoContext
@@ -404,6 +407,14 @@ export function VideoChat({
                 </div>
               )}
             </div>
+          )}
+
+          {view === "clip" && (
+            <ClipComposer
+              sequenceId={sequenceId}
+              resources={resources}
+              onSaved={onRefreshNeeded}
+            />
           )}
         </div>
 

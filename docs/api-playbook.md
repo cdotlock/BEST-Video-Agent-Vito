@@ -23,7 +23,7 @@ MCP 初始化是 **惰性** 的——首次 API 请求触发 `initMcp()`。
 初始化顺序：
 
 1. 注册 core static providers（`skills`, `mcp_manager`, `ui`, `memory`）
-2. 注册系统依赖 providers（`langfuse`, `subagent`）
+2. 注册系统依赖 provider（`subagent`）
 3. 业务 providers（`video_mgr`, `style_search`, `oss`, `biz_db` 等）按需加载（catalog 或 mcp_manager）
 
 因此：刚启动后第一次请求会较慢（冷启动）。
@@ -173,13 +173,46 @@ curl -X POST http://localhost:8001/api/video/tasks \
 
 **因果**：绑定后，无需每轮重复手工粘贴风格 prompt；后续生成默认走 `Base / Style / Content / Task` 四层组装。
 
+### 分镜网格与最简剪辑计划
+
+1. 通过 MCP `video_mgr__generate_storyboard_grid`：
+   - 输入 `layout=grid_2x2|grid_3x3` + cell prompts
+   - 生成 cell 图片并持久化网格计划 JSON
+2. `POST /api/video/sequences/{sequenceId}/clip-plan`：
+   - 输入片段列表（顺序/in/out/transition）
+   - 保存 clip plan 到 `domain_resources`（mediaType=json）
+
+**因果**：网格分镜和 clip plan 均是持久化中间资产，可在后续会话继续复用，不依赖上下文记忆。
+
+### 参考角色化（图/视频混合参考）
+
+1. MCP `video_mgr__generate_image` 支持两类参考入参：
+   - 兼容字段：`referenceImageUrls[]`
+   - 角色化字段：`references[]`（`style_ref/scene_ref/empty_shot_ref/character_ref/motion_ref`）
+2. MCP `video_mgr__generate_video` 支持：
+   - 策略：`prompt_only/first_frame/first_last_frame/mixed_refs`
+   - 兼容字段：`referenceImageUrls[] + referenceVideoUrls[]`
+   - 角色化字段：`references[]`（含 `mediaType=image|video`）
+3. 服务端会合并并去重参考链接，将快照写入 `domain_resources.data`，用于后续 review/复用。
+
+**因果**：同一条生成记录既保留历史兼容字段，也保留角色语义；后续 agent 可基于角色语义重组 prompt，而不是把参考素材混为一类。
+
 ### 长期记忆（默认开启）
 
 1. `GET /api/video/memory/recommendations?memoryUser=...`：
    - 返回长期偏好推荐（style tokens / providers / prompt hints）
-2. `POST /api/video/memory/feedback`：
-   - 写入偏好事件（`style_profile_saved` / `style_profile_applied` / `generation_feedback` / `manual_feedback`）
-3. `DELETE /api/video/memory`：
+2. `POST /api/video/memory/optimize-prompt`：
+   - 输入 `memoryUser + prompt (+ mode)`
+   - 用长期记忆自动优化 prompt，并默认记录 `prompt_optimized` 事件
+3. `GET /api/video/memory/path-recommendations`：
+   - 输入 `memoryUser` + 可选目标信息（goal/storyboardDensity/hasReferenceVideo/wantsMultiClip）
+   - 返回 Top 路径推荐与原因
+4. `POST /api/video/memory/path-review`：
+   - 输入 `pathId + score`
+   - 记录路径评审并写回长期记忆（`workflow_path_review`）
+5. `POST /api/video/memory/feedback`：
+   - 写入偏好事件（`style_profile_saved` / `style_profile_applied` / `generation_feedback` / `manual_feedback` / `prompt_optimized` / `workflow_path_review`）
+6. `DELETE /api/video/memory`：
    - 按 `memoryUser` 清空长期记忆
 
 **因果**：初始化、风格应用和生成阶段都可读写同一 memory user 的偏好；使用次数越多，默认参数越贴近用户风格。

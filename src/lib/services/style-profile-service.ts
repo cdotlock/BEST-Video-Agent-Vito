@@ -847,6 +847,7 @@ export async function reverseStyleFromReferences(
       sequenceKey: input.sequenceKey,
       eventType: "style_profile_saved",
       styleTokens,
+      workflowPaths: [],
       providers,
       positivePrompt,
       negativePrompt,

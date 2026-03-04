@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
   MemoryProviderSchema,
+  WorkflowPathIdSchema,
   recordPreferenceFeedback,
 } from "@/lib/services/video-memory-service";
 
@@ -14,8 +15,11 @@ const FeedbackSchema = z.object({
     "style_profile_applied",
     "generation_feedback",
     "manual_feedback",
+    "prompt_optimized",
+    "workflow_path_review",
   ]),
   styleTokens: z.array(z.string().min(1)).optional().default([]),
+  workflowPaths: z.array(WorkflowPathIdSchema).optional().default([]),
   providers: z.array(MemoryProviderSchema).optional().default([]),
   positivePrompt: z.string().nullable().optional(),
   negativePrompt: z.string().nullable().optional(),
@@ -48,6 +52,7 @@ export async function POST(req: NextRequest) {
       sequenceKey: parsed.data.sequenceKey ?? null,
       eventType: parsed.data.eventType,
       styleTokens: parsed.data.styleTokens,
+      workflowPaths: parsed.data.workflowPaths,
       providers: parsed.data.providers,
       positivePrompt: parsed.data.positivePrompt ?? null,
       negativePrompt: parsed.data.negativePrompt ?? null,

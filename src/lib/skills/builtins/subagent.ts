@@ -6,7 +6,7 @@
  */
 export const raw = `---
 name: subagent
-description: Delegate prompt-driven tasks to smaller models via subagent. Use when you need to execute Langfuse prompts or any task that should not run on the main controller model.
+description: Delegate prompt-driven tasks to smaller models via subagent. Use when you need to execute optimized prompts assembled from built-in skills/memory or any task that should not run on the main controller model.
 tags:
   - core
   - subagent
@@ -18,7 +18,7 @@ requires_mcps:
 
 ## 核心原则
 
-**所有从 Langfuse 获取的 prompt 必须通过 subagent 执行，禁止在主控上下文中混合使用。**
+**所有由内置 skills/memory 组装出的 prompt，优先通过 subagent 执行，避免在主控上下文中混合执行细粒度生成。**
 
 原因：
 - 主控模型（如 Claude Opus）负责编排和决策，不应处理具体的 prompt 驱动任务
@@ -31,7 +31,7 @@ requires_mcps:
 
 ### 参数
 
-- \`prompt\`（必填）— 要执行的 prompt（通常来自 \`langfuse__compile_prompts\` 的输出）
+- \`prompt\`（必填）— 要执行的 prompt（通常来自 style-search / video-memory / context 的组装结果）
 - \`model\`（必填）— 模型名称，**没有默认值**，必须由调用方明确指定
 - \`imageUrls\`（可选）— 图片 URL 数组，用于多模态任务（如看图生成描述）
 - \`outputSchema\`（可选）— JSON Schema 对象。传入后 subagent 会自动校验输出：
@@ -52,27 +52,18 @@ requires_mcps:
 
 ## 典型工作流
 
-### Langfuse prompt → Subagent
+### 内置 Prompt 组装 → Subagent
 
 最常见的模式：
 
-1. 调用 \`langfuse__compile_prompts\` 编译 prompt
+1. 先基于 style-search 与 video-memory 组装 prompt（可附带参考图 URL）
 2. 调用 \`subagent__run_text\` 执行，指定合适的 model
 3. 解析返回结果
 
 示例：
 
 \\\`\\\`\\\`
-# Step 1: 编译 prompt
-langfuse__compile_prompts({
-  items: [{
-    name: "common__gen_scenery_shot__prompt",
-    variables: { style: "日漫风格", scene_description: "校园黄昏" }
-  }]
-})
-→ [{ status: "ok", name: "...", compiledPrompt: "日漫风格，请根据以下剧情生成场景描述：校园黄昏" }]
-
-# Step 2: 执行
+# Step 1: 组装 prompt（来自项目上下文 + memory）
 subagent__run_text({
   prompt: "日漫风格，请根据以下剧情生成场景描述：校园黄昏",
   model: "google/gemini-3.1-pro-preview"
@@ -132,7 +123,7 @@ subagent__run_text({
 
 ## 什么任务应该委托给 subagent
 
-- 从 Langfuse prompt 驱动的所有生成任务
+- 从内置 prompt 组装链路驱动的生成任务
 - JSON 格式化/解析（如 markdown → JSON）
 - 提示词生成（如场景描述 → 图片 prompt）
 - 图片内容分析（多模态）

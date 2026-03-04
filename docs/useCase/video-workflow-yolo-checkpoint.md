@@ -155,11 +155,58 @@ curl -v -s "http://localhost:8001/api/video/sequences/<SEQUENCE_ID>/resources?pr
 
 期望：返回 `categories`，能看到已落库素材（image/video/json）及其分组。
 
-### 10. 清理（可选）
+### 10. 验证路径推荐（长期记忆）
+
+```bash
+curl -v -s "http://localhost:8001/api/video/memory/path-recommendations?memoryUser=demo-user&goal=%E9%9C%80%E8%A6%81%E4%B9%9D%E5%AE%AB%E6%A0%BC%E5%88%86%E9%95%9C%E5%B9%B6%E6%9C%80%E7%BB%88%E6%8B%BC%E6%8E%A5&storyboardDensity=grid_3x3&wantsMultiClip=true" \
+  2>&1 | tee temp/video-workflow.10.txt
+```
+
+期望：返回 `recommendations`，包含路径 id、score 与原因（why）。
+
+### 11. 记录路径评审写回记忆
+
+从步骤 10 返回的推荐路径里选 1 条作为 `pathId`。
+
+```bash
+curl -v -s -X POST http://localhost:8001/api/video/memory/path-review \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "memoryUser":"demo-user",
+    "projectId":"<PROJECT_ID>",
+    "sequenceKey":"SQ1",
+    "pathId":"path.multi_clip_compose",
+    "score":1,
+    "note":"adopted in usecase"
+  }' \
+  2>&1 | tee temp/video-workflow.11.txt
+```
+
+期望：返回 `{ "ok": true }`，后续同用户路径推荐会体现该偏好增强。
+
+### 12. 保存最简剪辑计划
+
+```bash
+curl -v -s -X POST http://localhost:8001/api/video/sequences/<SEQUENCE_ID>/clip-plan \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "key":"clip_plan_demo_v1",
+    "title":"clip_plan_demo_v1",
+    "clips":[
+      {"resourceId":null,"url":"https://example.com/a.mp4","inSec":0,"outSec":3.5,"transition":"cut","title":"clip-a"},
+      {"resourceId":null,"url":"https://example.com/b.mp4","inSec":1,"outSec":4.2,"transition":"fade","title":"clip-b"}
+    ]
+  }' \
+  2>&1 | tee temp/video-workflow.12.txt
+```
+
+期望：返回 `resourceId` 与 `totalDurationSec`，且资源列表中出现 `clip_plan` JSON 资产。
+
+### 13. 清理（可选）
 
 ```bash
 curl -v -s -X DELETE http://localhost:8001/api/video/projects/<PROJECT_ID> \
-  2>&1 | tee temp/video-workflow.10.txt
+  2>&1 | tee temp/video-workflow.13.txt
 ```
 
 期望：项目删除成功。

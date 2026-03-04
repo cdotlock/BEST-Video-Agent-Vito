@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  App,
   Button,
   Card,
   Checkbox,
@@ -24,6 +25,8 @@ import type {
   StyleReference,
   StyleReverseResult,
   StyleSearchResult,
+  WorkflowPathRecommendation,
+  WorkflowPathRecommendationsResult,
 } from "../types";
 
 const DEFAULT_PROVIDERS: PublicImageProvider[] = ["unsplash", "pexels", "pixabay"];
@@ -38,6 +41,8 @@ export interface StyleInitPanelProps {
   sequenceKey: string | null;
   memoryUser: string;
   onInjectMessage: (message: string) => void;
+  openSignal?: number;
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function StyleInitPanel({
@@ -46,10 +51,14 @@ export function StyleInitPanel({
   sequenceKey,
   memoryUser,
   onInjectMessage,
+  openSignal,
+  onOpenChange,
 }: StyleInitPanelProps) {
+  const { message } = App.useApp();
   const screens = Grid.useBreakpoint();
   const drawerWidth: number | string = screens.lg ? 960 : "100%";
   const [open, setOpen] = useState(false);
+  const [isPathReviewing, setIsPathReviewing] = useState(false);
   const [query, setQuery] = useState("");
   const [profileName, setProfileName] = useState("");
   const [creativeGoal, setCreativeGoal] = useState("");
@@ -64,6 +73,7 @@ export function StyleInitPanel({
   const [reverseResult, setReverseResult] = useState<StyleReverseResult | null>(null);
   const [profiles, setProfiles] = useState<StyleProfile[]>([]);
   const [recommendations, setRecommendations] = useState<MemoryRecommendations | null>(null);
+  const [pathRecommendations, setPathRecommendations] = useState<WorkflowPathRecommendation[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set<string>());
   const [error, setError] = useState<string | null>(null);
 
@@ -106,11 +116,39 @@ export function StyleInitPanel({
     }
   }, [memoryUser]);
 
+  const loadPathRecommendations = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({
+        memoryUser,
+      });
+      if (creativeGoal.trim().length > 0) {
+        params.set("goal", creativeGoal.trim());
+      }
+      const data = await fetchJson<WorkflowPathRecommendationsResult>(
+        `/api/video/memory/path-recommendations?${params.toString()}`,
+      );
+      setPathRecommendations(data.recommendations);
+    } catch {
+      setPathRecommendations([]);
+    }
+  }, [creativeGoal, memoryUser]);
+
   useEffect(() => {
     if (!open) return;
     void loadProfiles();
     void loadRecommendations();
-  }, [open, loadProfiles, loadRecommendations]);
+    void loadPathRecommendations();
+  }, [open, loadPathRecommendations, loadProfiles, loadRecommendations]);
+
+  useEffect(() => {
+    if (openSignal === undefined) return;
+    setOpen(true);
+  }, [openSignal]);
+
+  const changeOpen = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  }, [onOpenChange]);
 
   const handleSearch = useCallback(async () => {
     const cleanQuery = query.trim();
@@ -245,14 +283,14 @@ export function StyleInitPanel({
     try {
       await applyProfileToSequence(profile);
       onInjectMessage(buildInjectInstruction(profile));
-      setOpen(false);
+      changeOpen(false);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
     } finally {
       setApplyingProfile(false);
     }
-  }, [applyProfileToSequence, buildInjectInstruction, onInjectMessage, reverseResult?.profile]);
+  }, [applyProfileToSequence, buildInjectInstruction, changeOpen, onInjectMessage, reverseResult?.profile]);
 
   const handleApplySavedProfile = useCallback(async (profile: StyleProfile) => {
     setError(null);
@@ -260,14 +298,69 @@ export function StyleInitPanel({
     try {
       await applyProfileToSequence(profile);
       onInjectMessage(buildInjectInstruction(profile));
-      setOpen(false);
+      changeOpen(false);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
     } finally {
       setApplyingProfile(false);
     }
-  }, [applyProfileToSequence, buildInjectInstruction, onInjectMessage]);
+  }, [applyProfileToSequence, buildInjectInstruction, changeOpen, onInjectMessage]);
+
+  const sendPathReview = useCallback(async (
+    pathId: string,
+    score: number,
+    note: string,
+  ) => {
+    setIsPathReviewing(true);
+    try {
+      await fetchJson("/api/video/memory/path-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memoryUser,
+          projectId,
+          sequenceKey,
+          pathId,
+          score,
+          note,
+        }),
+      });
+    } finally {
+      setIsPathReviewing(false);
+    }
+  }, [memoryUser, projectId, sequenceKey]);
+
+  const handleAdoptPath = useCallback(async (path: WorkflowPathRecommendation) => {
+    const instruction = [
+      `请采用推荐路径：${path.pathId}（${path.title}）`,
+      `sequence_key=${sequenceKey ?? "unknown"}`,
+      "请按以下步骤执行：",
+      ...path.steps.map((step, index) => `${index + 1}. ${step}`),
+      "若当前模式为 YOLO，请直接执行；若为 Checkpoint，请在关键高成本动作前确认。",
+    ].join("\n");
+
+    try {
+      await sendPathReview(path.pathId, 1, "adopted_from_style_init");
+      onInjectMessage(instruction);
+      void message.success("已采用推荐路径并注入对话。");
+      changeOpen(false);
+    } catch (err: unknown) {
+      const errorText = err instanceof Error ? err.message : String(err);
+      void message.error(`路径应用失败: ${errorText}`);
+    }
+  }, [changeOpen, message, onInjectMessage, sendPathReview, sequenceKey]);
+
+  const handleRejectPath = useCallback(async (path: WorkflowPathRecommendation) => {
+    try {
+      await sendPathReview(path.pathId, -0.5, "dismissed_from_style_init");
+      setPathRecommendations((prev) => prev.filter((item) => item.pathId !== path.pathId));
+      void message.success("已记录为不偏好路径。");
+    } catch (err: unknown) {
+      const errorText = err instanceof Error ? err.message : String(err);
+      void message.error(`记录失败: ${errorText}`);
+    }
+  }, [message, sendPathReview]);
 
   return (
     <>
@@ -281,7 +374,7 @@ export function StyleInitPanel({
         <Button
           size="small"
           icon={<BgColorsOutlined />}
-          onClick={() => setOpen(true)}
+          onClick={() => changeOpen(true)}
           disabled={!sequenceId || !sequenceKey}
         >
           Open
@@ -290,7 +383,7 @@ export function StyleInitPanel({
 
       <Drawer
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={() => changeOpen(false)}
         title="Style Initialization"
         width={drawerWidth}
       >
@@ -312,6 +405,62 @@ export function StyleInitPanel({
                 <div className="mt-1 flex flex-wrap gap-1">
                   {recommendations.preferredStyleTokens.slice(0, 6).map((token) => (
                     <Tag key={token} color="green">{token}</Tag>
+                  ))}
+                </div>
+                {recommendations.preferredWorkflowPaths.length > 0 && (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {recommendations.preferredWorkflowPaths.slice(0, 3).map((path) => (
+                      <Tag key={path} color="blue">{path}</Tag>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {pathRecommendations.length > 0 && (
+              <div className="mb-2 rounded border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-blue-950">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="font-medium">路径推荐（可直接采用）</span>
+                  <Button
+                    size="small"
+                    type="text"
+                    onClick={() => void loadPathRecommendations()}
+                    loading={isPathReviewing}
+                  >
+                    Refresh
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {pathRecommendations.slice(0, 3).map((path) => (
+                    <div key={path.pathId} className="rounded border border-blue-200 bg-white px-2 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate font-medium">{path.title}</div>
+                          <div className="truncate text-[10px] text-blue-700">{path.pathId} · score {path.score}</div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Button
+                            size="small"
+                            type="primary"
+                            onClick={() => void handleAdoptPath(path)}
+                            loading={isPathReviewing}
+                          >
+                            Adopt
+                          </Button>
+                          <Button
+                            size="small"
+                            onClick={() => void handleRejectPath(path)}
+                            loading={isPathReviewing}
+                          >
+                            Skip
+                          </Button>
+                        </div>
+                      </div>
+                      {path.why.length > 0 && (
+                        <div className="mt-1 text-[10px] text-blue-700">
+                          {path.why.join(" · ")}
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>
@@ -401,7 +550,9 @@ export function StyleInitPanel({
               <Input
                 placeholder="Creative goal (optional)"
                 value={creativeGoal}
-                onChange={(e) => setCreativeGoal(e.target.value)}
+                onChange={(e) => {
+                  setCreativeGoal(e.target.value);
+                }}
               />
               <Button
                 type="primary"

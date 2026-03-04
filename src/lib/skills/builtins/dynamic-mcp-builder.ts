@@ -111,11 +111,11 @@ const tables = callToolSync("biz_db__list_tables", {});
 - **写操作 + RETURNING 子句**：返回 \`{ rows: [...], rowCount: N, command: "INSERT" }\`，rows 包含 RETURNING 的数据
 - **全部返回 JSON**，通过 \`JSON.parse(result.content[0].text)\` 解析，不会返回纯文本字符串
 
-### langfuse__*
+### video_memory__*
 
-- 需要配置环境变量 \`LANGFUSE_BASE_URL\`、\`LANGFUSE_PUBLIC_KEY\`、\`LANGFUSE_SECRET_KEY\`
-- 未配置时返回明确错误：\`Tool error: Langfuse 未配置 (...)\`
-- 工具名：\`langfuse__list_prompts\`、\`langfuse__get_prompts\`（注意有 **s**）、\`langfuse__compile_prompts\`
+- 用于读取和写入长期偏好，支持 prompt 优化闭环
+- 常见工具：\`video_memory__recommend_defaults\`、\`video_memory__record_feedback\`、\`video_memory__optimize_prompt\`
+- 建议先 \`recommend_defaults\` 再做生成，生成后回写 \`record_feedback\`
 
 ### video_mgr__*
 
@@ -276,11 +276,11 @@ module.exports = {
 ### "xxx is not defined"
 沙盒中没有 Node.js API。不能用 \`require\`、\`Buffer\` 等。可用 \`console.log\`、\`fetchSync\`、\`getSkill\`、\`callToolSync\`。
 
-### "Tool error: Langfuse 未配置"
-环境变量缺失。检查 \`.env\` 中 \`LANGFUSE_BASE_URL\` / \`LANGFUSE_PUBLIC_KEY\` / \`LANGFUSE_SECRET_KEY\` 是否设置。
+### "Unknown tool" 或 "MCP not loaded"
+通常是 provider 未加载或 tool 名拼错。先确认 \`mcp_manager__list\` 中 provider 已启用，再检查工具名。
 
 ### \`JSON.parse\` 报 SyntaxError
-\`callToolSync\` 返回的 \`result.content[0].text\` 始终是 JSON 字符串（来自 biz_db 等系统工具）。若报 parse 错误，先打印 \`result.content[0].text\` 确认原始内容，通常是调用了错误的 tool 名（如 \`langfuse__get_prompt\` 而非 \`langfuse__get_prompts\`）。
+\`callToolSync\` 返回的 \`result.content[0].text\` 始终是 JSON 字符串（来自 biz_db 等系统工具）。若报 parse 错误，先打印 \`result.content[0].text\` 确认原始内容，通常是调用了错误的 tool 名。
 
 ### "Script execution timed out" / "interrupted"
 callTool 中的操作超过 30 秒。优化请求或减少循环次数。

@@ -37,9 +37,34 @@ requires_mcps:
 { "items": [{ "key": "char_alice_portrait", "prompt": "一个穿着蓝色连衣裙的少女站在樱花树下，动漫风格，高清", "category": "角色立绘", "scopeType": "project", "scopeId": "project-uuid-here", "title": "Alice" }] }
 \\\`\\\`\\\`
 
-### generate_video — 存储视频 prompt（当前不实际生成）
+### generate_video — 策略化视频生成/存储
 
-仅持久化运动 prompt 到 domain_resources，用户可在 UI 中未来手动触发生成。\`sourceImageUrl\` 通常传 generate_image 的输出。scopeType/scopeId 规则同上。
+支持策略：
+
+- \`prompt_only\`：仅存储视频 prompt
+- \`first_frame\`：首帧图生视频
+- \`first_last_frame\`：首尾帧受控图生视频
+- \`mixed_refs\`：图/视频混合参考（以图参考为主，视频参考作为语义约束）
+
+无论是否实际生成视频，都会写入 domain_resources（mediaType=video）并保留完整参数快照，便于复盘与再生。
+
+### generate_storyboard_grid — 四宫格/九宫格分镜
+
+输入 \`layout=grid_2x2|grid_3x3\` 和 cell prompts：
+
+1. 每个 cell 自动调用文生图
+2. 生成后自动保存网格计划 JSON（type=storyboard_grid）
+3. 可作为后续图生视频参考资产
+
+### save_clip_plan — 最简剪辑计划
+
+保存片段排序与转场参数（type=clip_plan）：
+
+1. 片段顺序
+2. in/out 秒数
+3. 转场（none/cut/fade）
+
+该计划用于后续拼接执行，不等同于重型时间线编辑器。
 
 ### Image Registry
 

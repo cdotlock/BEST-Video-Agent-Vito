@@ -10,7 +10,10 @@
  */
 
 import type { ContextProvider } from "@/lib/agent/context-provider";
-import { getMemoryRecommendations } from "@/lib/services/video-memory-service";
+import {
+  getMemoryRecommendations,
+  recommendWorkflowPaths,
+} from "@/lib/services/video-memory-service";
 import { getStyleProfileById } from "@/lib/services/style-profile-service";
 import { getSequenceRuntimeContext } from "@/lib/services/video-workflow-service";
 
@@ -37,6 +40,13 @@ export class VideoContextProvider implements ContextProvider {
       getSequenceRuntimeContext(projectId, sequenceKey),
       getMemoryRecommendations(memoryUser),
     ]);
+    const pathRecommendations = await recommendWorkflowPaths({
+      memoryUser,
+      goal: runtimeContext?.sequenceContent?.slice(0, 300) ?? null,
+      storyboardDensity: null,
+      hasReferenceVideo: false,
+      wantsMultiClip: false,
+    });
 
     const lines: string[] = [
       "# Video Workflow Context",
@@ -62,6 +72,9 @@ export class VideoContextProvider implements ContextProvider {
     if (memory.preferredProviders.length > 0) {
       lines.push(`preferred_providers: ${memory.preferredProviders.join(", ")}`);
     }
+    if (memory.preferredWorkflowPaths.length > 0) {
+      lines.push(`preferred_workflow_paths: ${memory.preferredWorkflowPaths.join(", ")}`);
+    }
     if (memory.positivePromptHint) {
       lines.push(`memory_positive_prompt_hint: ${memory.positivePromptHint}`);
     }
@@ -70,6 +83,15 @@ export class VideoContextProvider implements ContextProvider {
     }
     if (memory.queryHint) {
       lines.push(`memory_query_hint: ${memory.queryHint}`);
+    }
+    if (pathRecommendations.recommendations.length > 0) {
+      lines.push("");
+      lines.push("## Workflow Path Recommendations");
+      for (const recommendation of pathRecommendations.recommendations.slice(0, 3)) {
+        lines.push(
+          `${recommendation.pathId} (score=${recommendation.score.toFixed(2)}): ${recommendation.why.join("; ")}`,
+        );
+      }
     }
 
     if (runtimeContext?.sequenceContent) {

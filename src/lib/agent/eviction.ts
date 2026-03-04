@@ -25,8 +25,6 @@ const EPHEMERAL = new Set([
   "apis__toggle", "apis__set_production",
   // oss
   "oss__delete",
-  // langfuse_admin
-  "langfuse_admin__create_prompt",
 ]);
 
 /** Pinned — NEVER evict. Skills are curated reference docs, always kept in full. */
@@ -94,34 +92,6 @@ function generateSummary(
 
   if (toolName === "mcp_manager__get_code") {
     return `mcp_manager.get_code("${args?.name ?? "?"}"): ${result.length} 字符`;
-  }
-
-  /* langfuse */
-  if (
-    toolName === "langfuse__compile_prompts" ||
-    toolName === "langfuse_admin__compile_prompts"
-  ) {
-    const names = Array.isArray(args?.items)
-      ? (args.items as Array<{ name?: string }>).map(item => item.name).filter(Boolean).join(", ")
-      : "?";
-    return `langfuse.compile_prompts([${names}]): ${result.length} 字符`;
-  }
-  if (
-    toolName === "langfuse__get_prompts" ||
-    toolName === "langfuse_admin__get_prompts"
-  ) {
-    const names = Array.isArray(args?.names)
-      ? (args.names as string[]).join(", ")
-      : "?";
-    return `langfuse.get_prompts([${names}]): 返回模板`;
-  }
-  if (
-    toolName === "langfuse__list_prompts" ||
-    toolName === "langfuse_admin__list_prompts"
-  ) {
-    const parsed = tryParseJson(result);
-    const count = Array.isArray(parsed) ? parsed.length : "?";
-    return `langfuse.list_prompts: ${count} 个`;
   }
 
   /* video_mgr — keep URLs in summary */
@@ -376,4 +346,3 @@ function buildTailProtectedSet(
 
   return protected_;
 }
-

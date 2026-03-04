@@ -3,8 +3,6 @@ import { registry } from "./registry";
 import { bizDbMcp } from "./static/biz-db";
 import { apisMcp } from "./static/apis";
 import { videoMgrMcp } from "./static/video-mgr";
-import { langfuseMcp } from "./static/langfuse";
-import { langfuseAdminMcp } from "./static/langfuse-admin";
 import { subagentMcp } from "./static/subagent";
 import { ossMcp } from "./static/oss";
 import { styleSearchMcp } from "./static/style-search";
@@ -33,24 +31,6 @@ const CATALOG: readonly McpCatalogEntry[] = [
     name: "video_mgr",
     provider: videoMgrMcp,
     available: !!(process.env.FC_GENERATE_IMAGE_URL || process.env.FC_GENERATE_VIDEO_URL),
-  },
-  {
-    name: "langfuse",
-    provider: langfuseMcp,
-    available: !!(
-      process.env.LANGFUSE_BASE_URL &&
-      process.env.LANGFUSE_PUBLIC_KEY &&
-      process.env.LANGFUSE_SECRET_KEY
-    ),
-  },
-  {
-    name: "langfuse_admin",
-    provider: langfuseAdminMcp,
-    available: !!(
-      process.env.LANGFUSE_BASE_URL &&
-      process.env.LANGFUSE_PUBLIC_KEY &&
-      process.env.LANGFUSE_SECRET_KEY
-    ),
   },
   {
     name: "subagent",

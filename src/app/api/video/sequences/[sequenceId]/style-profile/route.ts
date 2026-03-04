@@ -105,6 +105,7 @@ export async function PATCH(
           sequenceKey: parsed.data.sequenceKey,
           eventType: "style_profile_applied",
           styleTokens: profile.styleTokens,
+          workflowPaths: [],
           providers,
           positivePrompt: profile.positivePrompt,
           negativePrompt: profile.negativePrompt,

@@ -56,7 +56,7 @@ export interface VideoContext {
 }
 
 export type ExecutionMode = "checkpoint" | "yolo";
-export type WorkspaceView = "chat" | "timeline" | "storyboard";
+export type WorkspaceView = "chat" | "timeline" | "storyboard" | "clip";
 
 export interface VideoTimelineEvent {
   id: string;
@@ -143,9 +143,23 @@ export interface MemoryRecommendations {
   memoryUser: string;
   enabled: true;
   preferredStyleTokens: string[];
+  preferredWorkflowPaths: string[];
   preferredProviders: PublicImageProvider[];
   positivePromptHint: string | null;
   negativePromptHint: string | null;
   queryHint: string | null;
   totalPreferenceItems: number;
+}
+
+export interface WorkflowPathRecommendation {
+  pathId: string;
+  title: string;
+  score: number;
+  why: string[];
+  steps: string[];
+}
+
+export interface WorkflowPathRecommendationsResult {
+  memoryUser: string;
+  recommendations: WorkflowPathRecommendation[];
 }

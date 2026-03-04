@@ -9,7 +9,6 @@ import { raw as dynamicMcpBuilder } from "./dynamic-mcp-builder";
 import { raw as businessDatabase } from "./business-database";
 import { raw as apiBuilder } from "./api-builder";
 import { raw as videoMgr } from "./video-mgr";
-import { raw as langfuse } from "./langfuse";
 import { raw as subagent } from "./subagent";
 import { raw as oss } from "./oss";
 import { raw as upload } from "./upload";
@@ -22,7 +21,6 @@ const RAW_SKILLS: readonly string[] = [
   businessDatabase,
   apiBuilder,
   videoMgr,
-  langfuse,
   subagent,
   oss,
   upload,
