@@ -4,33 +4,60 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import {
-  Alert,
   App,
   Breadcrumb,
   Button,
   Card,
+  Collapse,
   ConfigProvider,
   Drawer,
   Grid,
-  Menu,
+  Input,
+  Progress,
   Segmented,
-  Steps,
   Tag,
   Tooltip,
   Typography,
 } from "antd";
-import type { MenuProps } from "antd";
+import { SettingOutlined } from "@ant-design/icons";
+import { fetchJson } from "@/app/components/client-utils";
 import { useSessions } from "@/app/components/hooks/useSessions";
 import { useVideoData } from "../hooks/useVideoData";
 import { EpisodeList } from "../components/EpisodeList";
 import { ResourcePanel } from "../components/ResourcePanel";
 import { VideoChat } from "../components/VideoChat";
 import { StyleInitPanel } from "../components/StyleInitPanel";
-import type { VideoContext, ExecutionMode, WorkspaceView } from "../types";
+import type {
+  VideoContext,
+  ExecutionMode,
+  WorkspaceView,
+  VideoTimelineEvent,
+  MemoryRecommendations,
+  WorkflowPathRecommendation,
+  WorkflowPathRecommendationsResult,
+} from "../types";
+import { videoWorkspaceTheme } from "../theme";
 
 const DEFAULT_SKILLS = ["video-mgr", "style-search", "video-memory"];
 const DEFAULT_MCPS = ["video_mgr", "style_search", "video_memory"];
 const MEMORY_USER_STORAGE_KEY = "agentForge.user";
+const DEFAULT_AUTO_SEQUENCE_KEY = "PLAN1";
+
+type CheckpointPlanStatus = "none" | "draft" | "approved";
+
+interface AgentPlanState {
+  title: string | null;
+  items: string[];
+  raw: string | null;
+  updatedAt: string | null;
+}
+
+const EMPTY_AGENT_PLAN: AgentPlanState = {
+  title: null,
+  items: [],
+  raw: null,
+  updatedAt: null,
+};
 
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -38,34 +65,30 @@ function isTypingTarget(target: EventTarget | null): boolean {
   return tagName === "input" || tagName === "textarea" || target.isContentEditable;
 }
 
-function buildMenuItems(): MenuProps["items"] {
-  return [
-    {
-      key: "create",
-      label: "创作",
-      children: [
-        { key: "chat", label: "对话工作台" },
-        { key: "timeline", label: "任务时间线" },
-        { key: "storyboard", label: "分镜看板" },
-        { key: "clip", label: "剪辑计划" },
-      ],
-    },
-    {
-      key: "style",
-      label: "风格",
-      children: [{ key: "style_init", label: "风格初始化" }],
-    },
-    {
-      key: "assets",
-      label: "素材",
-      children: [{ key: "resources", label: "素材面板" }],
-    },
-    {
-      key: "history",
-      label: "历史",
-      children: [{ key: "sessions", label: "会话记录" }],
-    },
-  ];
+function planStatusTag(status: CheckpointPlanStatus, mode: ExecutionMode): { color: string; text: string } {
+  if (mode === "yolo") return { color: "volcano", text: "自动执行" };
+  if (status === "approved") return { color: "green", text: "已确认" };
+  if (status === "draft") return { color: "gold", text: "待确认" };
+  return { color: "default", text: "待生成" };
+}
+
+function formatPlanKey(sequenceKey: string): string {
+  return sequenceKey.replace(/^SQ/i, "PLAN");
+}
+
+function timelineEventLabel(event: VideoTimelineEvent): string {
+  switch (event.type) {
+    case "tool_start":
+      return `开始：${event.name ?? "unknown"}`;
+    case "tool_end":
+      return event.error
+        ? `失败：${event.name ?? "unknown"}`
+        : `完成：${event.name ?? "unknown"}`;
+    case "stream_end":
+      return event.error === "stopped_by_user" ? "已手动停止" : "本轮执行结束";
+    case "error":
+      return `错误：${event.error ?? "unknown"}`;
+  }
 }
 
 export default function VideoWorkflowPage() {
@@ -76,34 +99,53 @@ export default function VideoWorkflowPage() {
   const searchParams = useSearchParams();
   const projectId = params.projectId;
   const projectName = searchParams.get("name") ?? projectId;
+  const initialIdeaMessage = searchParams.get("idea")?.trim();
 
   const data = useVideoData(projectId);
+  const fallbackSequenceKey = data.selectedSequence?.sequenceKey ?? data.sequences[0]?.sequenceKey ?? "_";
 
-  const userName = data.selectedSequence
-    ? `video:${projectId}:${data.selectedSequence.sequenceKey}`
-    : `video:${projectId}:_`;
+  const userName = `video:${projectId}:${fallbackSequenceKey}`;
 
   const sessionsHook = useSessions(userName, () => {}, () => {});
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>();
   const [chatKey, setChatKey] = useState(() => crypto.randomUUID());
-  const [autoMessage, setAutoMessage] = useState<string | undefined>();
+  const [autoMessage, setAutoMessage] = useState<string | undefined>(
+    initialIdeaMessage && initialIdeaMessage.length > 0 ? initialIdeaMessage : undefined,
+  );
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("checkpoint");
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("chat");
   const [injectedMessage, setInjectedMessage] = useState<{ id: string; text: string } | null>(null);
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
+  const [proDrawerOpen, setProDrawerOpen] = useState(false);
+  const [proGoal, setProGoal] = useState("");
   const [styleInitOpenSignal, setStyleInitOpenSignal] = useState<number | undefined>(undefined);
-  const [openMenuKeys, setOpenMenuKeys] = useState<string[]>(["create"]);
-  const [memoryUser] = useState(() => {
+  const [memoryUser, setMemoryUser] = useState(() => {
     if (typeof window === "undefined") return "default";
     const stored = window.localStorage.getItem(MEMORY_USER_STORAGE_KEY);
     return stored && stored.trim().length > 0 ? stored.trim() : "default";
   });
+  const [memoryRecommendations, setMemoryRecommendations] = useState<MemoryRecommendations | null>(null);
+  const [pathRecommendations, setPathRecommendations] = useState<WorkflowPathRecommendation[]>([]);
+  const [isLoadingProData, setIsLoadingProData] = useState(false);
+  const [isClearingMemory, setIsClearingMemory] = useState(false);
+  const [isReviewingPath, setIsReviewingPath] = useState(false);
+
+  const [timelineEvents, setTimelineEvents] = useState<VideoTimelineEvent[]>([]);
+  const [checkpointPlanStatus, setCheckpointPlanStatus] = useState<CheckpointPlanStatus>("none");
+  const [agentPlan, setAgentPlan] = useState<AgentPlanState>(EMPTY_AGENT_PLAN);
+
+  const resetAgentPlan = useCallback(() => {
+    setTimelineEvents([]);
+    setCheckpointPlanStatus("none");
+    setAgentPlan(EMPTY_AGENT_PLAN);
+  }, []);
 
   const switchSession = useCallback((sessionId?: string) => {
     setCurrentSessionId(sessionId);
     setChatKey(crypto.randomUUID());
-  }, []);
+    resetAgentPlan();
+  }, [resetAgentPlan]);
 
   const handleNewSession = useCallback(() => {
     switchSession(undefined);
@@ -125,56 +167,76 @@ export default function VideoWorkflowPage() {
     };
   }, [projectId, data.selectedSequence]);
 
-  const hasGeneratedAssets = useMemo(() => {
-    if (!data.resources) return false;
-    return data.resources.categories.some((group) => group.items.length > 0);
-  }, [data.resources]);
+  const ensureVideoContext = useCallback(async (): Promise<VideoContext | null> => {
+    if (data.selectedSequence) {
+      return {
+        projectId,
+        sequenceKey: data.selectedSequence.sequenceKey,
+      };
+    }
 
-  const quickStepCurrent = useMemo(() => {
-    if (!data.selectedSequence || data.selectedSequence.status === "empty") return 0;
-    if (!data.selectedSequence.activeStyleProfileId) return 1;
-    if (!hasGeneratedAssets) return 2;
-    return 3;
-  }, [data.selectedSequence, hasGeneratedAssets]);
+    const firstSequence = data.sequences[0];
+    if (firstSequence) {
+      data.selectSequence(firstSequence);
+      return {
+        projectId,
+        sequenceKey: firstSequence.sequenceKey,
+      };
+    }
+
+    await data.uploadSequence(DEFAULT_AUTO_SEQUENCE_KEY, "默认计划", null);
+    const refreshed = await data.refreshSequences();
+    const created = refreshed.find((seq) => seq.sequenceKey === DEFAULT_AUTO_SEQUENCE_KEY) ?? refreshed[0];
+    if (!created) {
+      void message.error("自动初始化计划失败，请稍后重试。");
+      return null;
+    }
+    data.selectSequence(created);
+    return {
+      projectId,
+      sequenceKey: created.sequenceKey,
+    };
+  }, [data, message, projectId]);
 
   const modeDescription = executionMode === "yolo"
-    ? "YOLO: 自动推进，不做中间确认"
-    : "Checkpoint: 关键动作先确认";
+    ? "YOLO: 先出计划再自动执行，不做中间确认"
+    : "Checkpoint: 先出计划，确认后再执行";
 
-  const selectedMenuKey = useMemo(() => {
-    if (workspaceView === "chat") return "chat";
-    if (workspaceView === "timeline") return "timeline";
-    if (workspaceView === "storyboard") return "storyboard";
-    return "clip";
-  }, [workspaceView]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(MEMORY_USER_STORAGE_KEY, memoryUser);
+  }, [memoryUser]);
 
-  const openStyleInit = useCallback(() => {
-    if (!data.selectedSequence) {
-      void message.warning("请先上传或选择一个序列。");
+  useEffect(() => {
+    if (data.selectedSequence) return;
+    const firstSequence = data.sequences[0];
+    if (!firstSequence) return;
+    data.selectSequence(firstSequence);
+  }, [data]);
+
+  const handleExecutionModeChange = useCallback((nextMode: ExecutionMode) => {
+    setExecutionMode(nextMode);
+    if (nextMode === "yolo") {
+      setCheckpointPlanStatus((prev) => (prev === "draft" ? "approved" : prev));
       return;
     }
+    setCheckpointPlanStatus((prev) => (prev === "approved" ? prev : "none"));
+  }, []);
+
+  const handleTimelineEventsChange = useCallback((events: VideoTimelineEvent[]) => {
+    setTimelineEvents(events);
+    const latest = events[events.length - 1];
+    if (!latest || latest.type !== "stream_end") return;
+    if (checkpointPlanStatus === "approved") {
+      setCheckpointPlanStatus("none");
+    }
+  }, [checkpointPlanStatus]);
+
+  const openStyleInit = useCallback(async () => {
+    const context = await ensureVideoContext();
+    if (!context) return;
     setStyleInitOpenSignal((prev) => (prev ?? 0) + 1);
-  }, [data.selectedSequence, message]);
-
-  const openSequencePanel = useCallback(() => {
-    if (isDesktop) {
-      void message.info("请在左侧面板上传或选择序列。");
-      return;
-    }
-    setLeftDrawerOpen(true);
-  }, [isDesktop, message]);
-
-  const sendStarterInstruction = useCallback(() => {
-    if (!data.selectedSequence) {
-      void message.warning("请先上传或选择一个序列。");
-      return;
-    }
-    const starter = executionMode === "yolo"
-      ? "请直接自动推进：根据当前序列完成风格初始化、分镜生成、视频候选生成与可拼接方案，无需等待确认。"
-      : "请按 checkpoint 模式推进：先风格初始化，再分镜与视频候选；每个高成本动作前先确认一次。";
-    setInjectedMessage({ id: crypto.randomUUID(), text: starter });
-    setWorkspaceView("chat");
-  }, [data.selectedSequence, executionMode, message]);
+  }, [ensureVideoContext]);
 
   const handleSelectSequence = useCallback(
     (seq: typeof data.sequences[number]) => {
@@ -184,8 +246,9 @@ export default function VideoWorkflowPage() {
       setInjectedMessage(null);
       setChatKey(crypto.randomUUID());
       setLeftDrawerOpen(false);
+      resetAgentPlan();
     },
-    [data],
+    [data, resetAgentPlan],
   );
 
   const handleUpload = useCallback(
@@ -197,15 +260,12 @@ export default function VideoWorkflowPage() {
         data.selectSequence(newSeq);
         setCurrentSessionId(undefined);
         setInjectedMessage(null);
-        setAutoMessage(
-          executionMode === "yolo"
-            ? "素材已上传。请直接自动推进：先风格初始化，再持续生成分镜图与视频提示词，无需等待确认。"
-            : "素材已上传。请先完成风格初始化，然后按阶段推进分镜图与视频提示词生成；关键节点请先确认。",
-        );
+        setAutoMessage(undefined);
         setChatKey(crypto.randomUUID());
+        resetAgentPlan();
       }
     },
-    [data, executionMode],
+    [data, resetAgentPlan],
   );
 
   const handleSessionCreated = useCallback(
@@ -222,32 +282,115 @@ export default function VideoWorkflowPage() {
     void sessionsHook.refreshSessions();
   }, [data, sessionsHook]);
 
+  const loadProData = useCallback(async () => {
+    setIsLoadingProData(true);
+    try {
+      const [memory, paths] = await Promise.all([
+        fetchJson<MemoryRecommendations>(
+          `/api/video/memory/recommendations?memoryUser=${encodeURIComponent(memoryUser)}`,
+        ),
+        fetchJson<WorkflowPathRecommendationsResult>(
+          `/api/video/memory/path-recommendations?memoryUser=${encodeURIComponent(memoryUser)}&goal=${encodeURIComponent(proGoal.trim())}`,
+        ),
+      ]);
+      setMemoryRecommendations(memory);
+      setPathRecommendations(paths.recommendations);
+    } catch {
+      void message.error("读取 Pro 数据失败。");
+    } finally {
+      setIsLoadingProData(false);
+    }
+  }, [memoryUser, message, proGoal]);
+
+  useEffect(() => {
+    if (!proDrawerOpen) return;
+    void loadProData();
+  }, [loadProData, proDrawerOpen]);
+
+  const handleClearMemory = useCallback(async () => {
+    setIsClearingMemory(true);
+    try {
+      await fetchJson("/api/video/memory", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memoryUser }),
+      });
+      void message.success("已清空该用户长期记忆。");
+      await loadProData();
+    } catch {
+      void message.error("清空记忆失败。");
+    } finally {
+      setIsClearingMemory(false);
+    }
+  }, [loadProData, memoryUser, message]);
+
+  const handleApplyPath = useCallback(async (path: WorkflowPathRecommendation) => {
+    if (!data.selectedSequence) {
+      void message.warning("请先进入一个计划再应用工作流。");
+      return;
+    }
+    setIsReviewingPath(true);
+    try {
+      await fetchJson("/api/video/memory/path-review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memoryUser,
+          projectId,
+          sequenceKey: data.selectedSequence.sequenceKey,
+          pathId: path.pathId,
+          score: 1,
+          note: "adopted_from_pro_mode",
+        }),
+      });
+      setInjectedMessage({
+        id: crypto.randomUUID(),
+        text: [
+        `请采用工作流：${path.pathId}（${path.title}）`,
+        "按以下步骤执行：",
+        ...path.steps.map((step, index) => `${index + 1}. ${step}`),
+        executionMode === "yolo" ? "请直接自动执行。" : "请先给我确认后再执行高成本步骤。",
+      ].join("\n"),
+      });
+      setWorkspaceView("chat");
+      void message.success("已应用工作流并注入对话。");
+    } catch {
+      void message.error("应用工作流失败。");
+    } finally {
+      setIsReviewingPath(false);
+    }
+  }, [data.selectedSequence, executionMode, memoryUser, message, projectId]);
+
   const handleInjectMessage = useCallback((text: string) => {
     setInjectedMessage({ id: crypto.randomUUID(), text });
     setWorkspaceView("chat");
   }, []);
 
-  const handleMenuClick = useCallback((info: { key: string }) => {
-    if (info.key === "chat" || info.key === "timeline" || info.key === "storyboard" || info.key === "clip") {
-      setWorkspaceView(info.key);
+  const handlePlanDetected = useCallback((plan: { title: string | null; items: string[]; raw: string }) => {
+    setAgentPlan({
+      title: plan.title,
+      items: plan.items,
+      raw: plan.raw,
+      updatedAt: new Date().toISOString(),
+    });
+    if (executionMode === "checkpoint" && checkpointPlanStatus !== "approved") {
+      setCheckpointPlanStatus("draft");
+    }
+  }, [checkpointPlanStatus, executionMode]);
+
+  const confirmCheckpointPlan = useCallback(() => {
+    if (executionMode !== "checkpoint") return;
+    if (agentPlan.items.length === 0) {
+      void message.warning("还没有可确认的计划。");
       return;
     }
-    if (info.key === "style_init") {
-      openStyleInit();
-      return;
-    }
-    if (info.key === "resources") {
-      if (isDesktop) {
-        setWorkspaceView("storyboard");
-      } else {
-        setRightDrawerOpen(true);
-      }
-      return;
-    }
-    if (info.key === "sessions" && !isDesktop) {
-      setLeftDrawerOpen(true);
-    }
-  }, [isDesktop, openStyleInit]);
+    setCheckpointPlanStatus("approved");
+    setInjectedMessage({
+      id: crypto.randomUUID(),
+      text: "计划已确认，请严格按计划从第1步开始执行；每个高成本步骤前先向我确认。",
+    });
+    setWorkspaceView("chat");
+  }, [agentPlan.items.length, executionMode, message]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -258,12 +401,6 @@ export default function VideoWorkflowPage() {
         event.preventDefault();
         setWorkspaceView("chat");
       } else if (event.key === "2") {
-        event.preventDefault();
-        setWorkspaceView("timeline");
-      } else if (event.key === "3") {
-        event.preventDefault();
-        setWorkspaceView("storyboard");
-      } else if (event.key === "4") {
         event.preventDefault();
         setWorkspaceView("clip");
       }
@@ -291,29 +428,129 @@ export default function VideoWorkflowPage() {
       onSelectSession={switchSession}
       onNewSession={handleNewSession}
       onDeleteSession={(id) => void handleDeleteSession(id)}
+      mode="sessions_only"
       embedded
     />
   );
 
-  const navigationSider = (
+  const planTag = planStatusTag(checkpointPlanStatus, executionMode);
+  const latestEvent = timelineEvents[timelineEvents.length - 1] ?? null;
+  const planMarkdown = useMemo(() => {
+    if (agentPlan.raw && agentPlan.raw.trim().length > 0) return agentPlan.raw.trim();
+    if (agentPlan.items.length === 0) return null;
+    return agentPlan.items.map((item, index) => `${index + 1}. ${item}`).join("\n");
+  }, [agentPlan.items, agentPlan.raw]);
+  const completedSteps = useMemo(
+    () => timelineEvents.filter((event) => event.type === "tool_end" && !event.error).length,
+    [timelineEvents],
+  );
+  const totalSteps = agentPlan.items.length;
+  const progressPercent = totalSteps > 0
+    ? Math.round((Math.min(completedSteps, totalSteps) / totalSteps) * 100)
+    : 0;
+
+  const leftRail = (
     <aside className="flex h-full w-full flex-col border-r border-slate-200 bg-white">
-      <div className="border-b border-slate-200 px-3 py-2.5">
-        <Typography.Text strong style={{ fontSize: 12 }}>
-          工作台导航
-        </Typography.Text>
-        <Menu
-          mode="inline"
-          className="mt-2"
-          selectedKeys={[selectedMenuKey]}
-          openKeys={openMenuKeys}
-          onOpenChange={(keys) => {
-            const latest = keys[keys.length - 1];
-            setOpenMenuKeys(latest ? [latest] : []);
-          }}
-          onClick={handleMenuClick}
-          items={buildMenuItems()}
-        />
+      <div className="border-b border-slate-200 p-3">
+        <Card size="small" styles={{ body: { padding: 10 } }}>
+          <div className="mb-2 flex items-center justify-between">
+            <Typography.Text strong style={{ fontSize: 12 }}>计划（MD）</Typography.Text>
+            <Tag color={planTag.color} style={{ margin: 0 }}>{planTag.text}</Tag>
+          </div>
+          <Progress
+            percent={progressPercent}
+            size="small"
+            status={checkpointPlanStatus === "draft" ? "active" : (planTag.color === "green" ? "success" : "normal")}
+            format={() => `${Math.min(completedSteps, totalSteps)} / ${totalSteps || 0}`}
+          />
+          <Collapse
+            size="small"
+            className="mt-2"
+            items={[
+              {
+                key: "plan-md",
+                label: "展开查看计划",
+                children: planMarkdown ? (
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap text-[11px] leading-relaxed text-slate-700">
+                    {planMarkdown}
+                  </pre>
+                ) : (
+                  <div className="text-[11px] text-slate-500">输入一句话后，Agent 会先输出计划。</div>
+                ),
+              },
+            ]}
+          />
+          {agentPlan.items.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {agentPlan.items.slice(0, 8).map((item, index) => {
+                const isDone = index < completedSteps;
+                return (
+                  <div key={`${item}-${index}`} className="flex items-start gap-1.5 text-[11px]">
+                    <span className={`mt-[2px] inline-block h-2 w-2 rounded-full ${isDone ? "bg-emerald-500" : "bg-slate-300"}`} />
+                    <span className={isDone ? "text-slate-600 line-through" : "text-slate-700"}>{item}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {latestEvent && (
+            <div className="mt-2 text-[10px] text-slate-500">
+              最近进度：{latestEvent.name ?? latestEvent.type}
+            </div>
+          )}
+          <div className="mt-2 flex items-center gap-2">
+            {executionMode === "checkpoint" && checkpointPlanStatus === "draft" && (
+              <Button size="small" type="primary" onClick={confirmCheckpointPlan}>确认计划</Button>
+            )}
+          </div>
+        </Card>
       </div>
+
+      <div className="border-b border-slate-200 p-3">
+        <Card size="small" styles={{ body: { padding: 10 } }}>
+          <div className="flex items-center justify-between">
+            <Typography.Text strong style={{ fontSize: 12 }}>风格</Typography.Text>
+            <Tag style={{ margin: 0 }} color={data.selectedSequence?.activeStyleProfileId ? "gold" : "blue"}>
+              {data.selectedSequence?.activeStyleProfileId ? "自定义" : "默认"}
+            </Tag>
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">
+            默认先用内置风格，不满意时再自定义。
+          </div>
+          <Button className="mt-2" size="small" onClick={() => void openStyleInit()}>
+            打开风格面板
+          </Button>
+        </Card>
+      </div>
+
+      <div className="border-b border-slate-200 p-3">
+        <Card size="small" styles={{ body: { padding: 10 } }}>
+          <details>
+            <summary className="cursor-pointer list-none text-[12px] font-semibold text-slate-700">
+              执行历史（点击展开）
+            </summary>
+            <div className="mt-2 space-y-1.5">
+              {timelineEvents.length === 0 ? (
+                <div className="text-[11px] text-slate-500">暂无历史记录。</div>
+              ) : (
+                timelineEvents
+                  .slice()
+                  .reverse()
+                  .slice(0, 16)
+                  .map((event) => (
+                    <div key={event.id} className="rounded border border-slate-200 bg-slate-50 px-2 py-1">
+                      <div className="text-[11px] text-slate-700">{timelineEventLabel(event)}</div>
+                      <div className="text-[10px] text-slate-500">
+                        {new Date(event.at).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  ))
+              )}
+            </div>
+          </details>
+        </Card>
+      </div>
+
       <div className="min-h-0 flex-1">{episodeList}</div>
     </aside>
   );
@@ -324,29 +561,20 @@ export default function VideoWorkflowPage() {
       isLoading={data.isLoadingResources}
       sequenceId={data.selectedSequence?.id ?? null}
       onRefresh={() => void data.refreshResources()}
+      onInjectMessage={handleInjectMessage}
       embedded
     />
   );
 
   return (
-    <ConfigProvider
-      theme={{
-        token: {
-          colorBgContainer: "#ffffff",
-          colorBgLayout: "#f5f7fa",
-          colorBorder: "#e5e7eb",
-          borderRadius: 12,
-          fontFamily: "\"IBM Plex Sans\", \"Noto Sans SC\", \"PingFang SC\", sans-serif",
-        },
-      }}
-    >
+    <ConfigProvider theme={videoWorkspaceTheme}>
       <main className="flex h-screen w-full flex-col bg-[#f5f7fa] text-slate-900">
         <header className="border-b border-slate-200 bg-white px-4 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <Breadcrumb
                 items={[
-                  { title: <Link href="/video">Projects</Link> },
+                  { title: <Link href="/video">项目列表</Link> },
                   { title: projectName },
                 ]}
               />
@@ -355,10 +583,10 @@ export default function VideoWorkflowPage() {
                   {projectName}
                 </Typography.Text>
                 <Tag color={data.selectedSequence ? "blue" : "default"} style={{ margin: 0 }}>
-                  {data.selectedSequence ? data.selectedSequence.sequenceKey : "未选择序列"}
+                  {data.selectedSequence ? formatPlanKey(data.selectedSequence.sequenceKey) : "未选择计划"}
                 </Tag>
                 <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  Project ID: {projectId.slice(0, 8)}...
+                  {executionMode === "yolo" ? "YOLO 自动执行" : "检查点确认执行"}
                 </Typography.Text>
               </div>
             </div>
@@ -367,35 +595,36 @@ export default function VideoWorkflowPage() {
                 size="small"
                 value={workspaceView}
                 onChange={(value) => {
-                  if (value === "chat" || value === "timeline" || value === "storyboard" || value === "clip") {
+                  if (value === "chat" || value === "clip") {
                     setWorkspaceView(value);
                   }
                 }}
                 options={[
-                  { label: "Chat", value: "chat" },
-                  { label: "Timeline", value: "timeline" },
-                  { label: "Storyboard", value: "storyboard" },
-                  { label: "Clip", value: "clip" },
+                  { label: "对话", value: "chat" },
+                  { label: "剪辑", value: "clip" },
                 ]}
               />
               <Tooltip title={modeDescription}>
                 <Segmented<ExecutionMode>
                   size="small"
                   value={executionMode}
-                  onChange={setExecutionMode}
+                  onChange={handleExecutionModeChange}
                   options={[
-                    { label: "Checkpoint", value: "checkpoint" },
+                    { label: "检查点", value: "checkpoint" },
                     { label: "YOLO", value: "yolo" },
                   ]}
                 />
               </Tooltip>
+              <Button size="small" icon={<SettingOutlined />} onClick={() => setProDrawerOpen(true)}>
+                Pro
+              </Button>
               <Button size="small" onClick={handleRefreshNeeded}>
-                Refresh
+                刷新
               </Button>
               {!isDesktop && (
                 <>
                   <Button size="small" onClick={() => setLeftDrawerOpen(true)}>
-                    导航
+                    计划
                   </Button>
                   <Button size="small" onClick={() => setRightDrawerOpen(true)}>
                     素材
@@ -407,81 +636,9 @@ export default function VideoWorkflowPage() {
         </header>
 
         <div className="flex min-h-0 flex-1">
-          {isDesktop && <div className="w-72 min-w-[260px]">{navigationSider}</div>}
+          {isDesktop && <div className="w-80 min-w-[320px]">{leftRail}</div>}
 
           <section className={`flex min-w-0 flex-1 flex-col ${isDesktop ? "border-x border-slate-200 bg-white" : "bg-white"}`}>
-            <Card size="small" className="m-3 mb-2" styles={{ body: { padding: 12 } }}>
-              <div className="mb-2 flex items-center justify-between">
-                <Typography.Text strong style={{ fontSize: 12 }}>
-                  新手引导（4 步）
-                </Typography.Text>
-                <Tag color={executionMode === "yolo" ? "volcano" : "blue"} style={{ margin: 0 }}>
-                  {executionMode === "yolo" ? "YOLO 自动推进" : "Checkpoint 确认模式"}
-                </Tag>
-              </div>
-              <Steps
-                size="small"
-                current={quickStepCurrent}
-                items={[
-                  {
-                    title: "上传序列",
-                    description:
-                      data.selectedSequence && data.selectedSequence.status !== "empty" ? "已完成" : "需要上传内容文件",
-                  },
-                  {
-                    title: "风格确认",
-                    description: data.selectedSequence?.activeStyleProfileId ? "已绑定风格档案" : "先做搜图与反推",
-                  },
-                  {
-                    title: "开始生成",
-                    description: hasGeneratedAssets ? "已有素材输出" : "发送第一条生成指令",
-                  },
-                  {
-                    title: "保存拼接",
-                    description: "在 Clip 视图保存 clip plan",
-                  },
-                ]}
-              />
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button size="small" onClick={openSequencePanel}>
-                  1. 上传/选择序列
-                </Button>
-                <Button size="small" onClick={openStyleInit} disabled={!data.selectedSequence}>
-                  2. 打开风格初始化
-                </Button>
-                <Button size="small" onClick={sendStarterInstruction} disabled={!data.selectedSequence}>
-                  3. 发送首条生成指令
-                </Button>
-                <Button size="small" onClick={() => setWorkspaceView("clip")} disabled={!data.selectedSequence}>
-                  4. 打开剪辑计划
-                </Button>
-              </div>
-            </Card>
-
-            {!data.selectedSequence && (
-              <div className="px-3 pb-2">
-                <Alert
-                  showIcon
-                  type="info"
-                  message="还没有可用序列"
-                  description="请先上传一个 .md/.txt 序列文件，再开始风格初始化与生成。"
-                  action={<Button size="small" onClick={openSequencePanel}>去上传</Button>}
-                />
-              </div>
-            )}
-
-            {data.selectedSequence && !data.selectedSequence.activeStyleProfileId && (
-              <div className="px-3 pb-2">
-                <Alert
-                  showIcon
-                  type="warning"
-                  message="尚未完成风格确认"
-                  description="建议先在 Style Init 中搜图并反推，再进入大批量生成，效果更稳定。"
-                  action={<Button size="small" type="primary" onClick={openStyleInit}>去初始化</Button>}
-                />
-              </div>
-            )}
-
             <StyleInitPanel
               projectId={projectId}
               sequenceId={data.selectedSequence?.id ?? null}
@@ -489,6 +646,7 @@ export default function VideoWorkflowPage() {
               memoryUser={memoryUser}
               onInjectMessage={handleInjectMessage}
               openSignal={styleInitOpenSignal}
+              showInlineTrigger={false}
             />
 
             <div className="min-h-0 flex-1">
@@ -496,18 +654,23 @@ export default function VideoWorkflowPage() {
                 key={chatKey}
                 initialSessionId={currentSessionId}
                 videoContext={videoContext}
+                ensureVideoContext={ensureVideoContext}
                 preloadMcps={DEFAULT_MCPS}
                 skills={DEFAULT_SKILLS}
                 onSessionCreated={handleSessionCreated}
                 onRefreshNeeded={handleRefreshNeeded}
                 autoMessage={autoMessage}
                 executionMode={executionMode}
-                onExecutionModeChange={setExecutionMode}
+                onExecutionModeChange={handleExecutionModeChange}
                 injectedMessage={injectedMessage}
                 memoryUser={memoryUser}
                 view={workspaceView}
                 resources={data.resources}
                 sequenceId={data.selectedSequence?.id ?? null}
+                checkpointPlanStatus={checkpointPlanStatus}
+                onCheckpointPlanStatusChange={setCheckpointPlanStatus}
+                onPlanDetected={handlePlanDetected}
+                onTimelineEventsChange={handleTimelineEventsChange}
               />
             </div>
           </section>
@@ -515,18 +678,111 @@ export default function VideoWorkflowPage() {
           {isDesktop && <div className="w-80 min-w-[300px]">{resourcePanel}</div>}
         </div>
 
+        <Drawer
+          title="Pro 模式"
+          placement="right"
+          open={proDrawerOpen}
+          onClose={() => setProDrawerOpen(false)}
+          width={420}
+        >
+          <div className="space-y-3">
+            <Card size="small" title="记忆用户">
+              <Input
+                size="small"
+                value={memoryUser}
+                onChange={(event) => setMemoryUser(event.target.value)}
+                placeholder="default"
+              />
+              <div className="mt-2 flex gap-2">
+                <Button size="small" onClick={() => void loadProData()} loading={isLoadingProData}>
+                  刷新推荐
+                </Button>
+                <Button size="small" danger onClick={() => void handleClearMemory()} loading={isClearingMemory}>
+                  清空记忆
+                </Button>
+              </div>
+            </Card>
+
+            <Card size="small" title="工作流定制">
+              <Input
+                size="small"
+                value={proGoal}
+                onChange={(event) => setProGoal(event.target.value)}
+                placeholder="可选：输入目标，刷新后获得更精准路径"
+              />
+              <Button className="mt-2" size="small" onClick={() => void loadProData()} loading={isLoadingProData}>
+                刷新路径推荐
+              </Button>
+              <div className="mt-2 space-y-2">
+                {pathRecommendations.length === 0 ? (
+                  <div className="text-[11px] text-slate-500">暂无推荐路径。</div>
+                ) : (
+                  pathRecommendations.map((path) => (
+                    <div key={path.pathId} className="rounded border border-slate-200 bg-slate-50 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-[12px] font-medium text-slate-800">{path.title}</div>
+                          <div className="truncate text-[10px] text-slate-500">{path.pathId}</div>
+                        </div>
+                        <Button
+                          size="small"
+                          type="primary"
+                          onClick={() => void handleApplyPath(path)}
+                          loading={isReviewingPath}
+                        >
+                          应用
+                        </Button>
+                      </div>
+                      <div className="mt-1 text-[10px] text-slate-600">
+                        {path.steps.slice(0, 3).join(" / ")}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>
+
+            <Card size="small" title="风格高级入口">
+              <div className="text-[11px] text-slate-500">
+                可在此进入高级风格定制：参考图检索、风格反推、风格档案覆写当前计划。
+              </div>
+              <Button
+                className="mt-2"
+                size="small"
+                type="primary"
+                onClick={() => {
+                  setProDrawerOpen(false);
+                  void openStyleInit();
+                }}
+              >
+                打开风格高级面板
+              </Button>
+            </Card>
+
+            {memoryRecommendations && (
+              <Card size="small" title="当前记忆摘要">
+                <div className="space-y-1.5 text-[11px] text-slate-600">
+                  <div>偏好风格词：{memoryRecommendations.preferredStyleTokens.slice(0, 6).join(", ") || "无"}</div>
+                  <div>偏好路径：{memoryRecommendations.preferredWorkflowPaths.slice(0, 4).join(", ") || "无"}</div>
+                  <div>偏好来源：{memoryRecommendations.preferredProviders.join(", ") || "无"}</div>
+                </div>
+              </Card>
+            )}
+          </div>
+        </Drawer>
+
         {!isDesktop && (
           <>
             <Drawer
-              title="导航与序列"
+              title="计划与会话"
               placement="left"
               open={leftDrawerOpen}
               onClose={() => setLeftDrawerOpen(false)}
-              width={330}
+              width={340}
               destroyOnClose={false}
               styles={{ body: { padding: 0 } }}
             >
-              <div className="h-[calc(100vh-120px)]">{navigationSider}</div>
+              <div className="h-[calc(100vh-120px)]">{leftRail}</div>
             </Drawer>
             <Drawer
               title="素材面板"

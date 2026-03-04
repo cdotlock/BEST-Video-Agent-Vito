@@ -144,6 +144,20 @@ curl -X POST http://localhost:8001/api/video/tasks \
 
 **因果**：sequence 是任务上下文和资源聚合的最小工作单元；project 级资源与 sequence 级资源在读取时合并展示。
 
+### 素材写回稳定性校验（2026-03 更新）
+
+前端刷新链路必须同时覆盖：
+
+1. SSE `tool_end` 事件（常规刷新）
+2. SSE `key_resource` 事件（图片写回即时刷新）
+3. SSE `stream_end` 事件（兜底刷新）
+
+验证方法：
+
+1. 提交一次 `generate_image` 或 `generate_video` 任务。
+2. 观察任务流结束后 2 秒内，`GET /api/video/sequences/{sequenceId}/resources?projectId=...` 返回中出现新增资源。
+3. 若任务成功但素材列表无新增，优先检查事件流是否收到 `key_resource`/`stream_end`，再排查 DB 写入。
+
 ### Style 初始化链路（公共图库）
 
 1. `POST /api/video/style/search`：

@@ -1,12 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import { Alert, App, Button, Dropdown, Empty, Input, Select, Timeline, Tooltip, Typography, Tag } from "antd";
+import { useCallback, useEffect, useRef } from "react";
+import { Alert, App, Button, Input, Select } from "antd";
 import {
-  ClockCircleOutlined,
-  CopyOutlined,
-  MoreOutlined,
-  PlayCircleOutlined,
   SendOutlined,
   StopOutlined,
   LoadingOutlined,
@@ -20,29 +16,21 @@ import { useModels } from "@/app/components/hooks/useModels";
 import { useVideoChat } from "../hooks/useVideoChat";
 import { ClipComposer } from "./ClipComposer";
 import type {
-  DomainResource,
   DomainResources,
   ExecutionMode,
   VideoContext,
-  VideoResourceData,
   VideoTimelineEvent,
   WorkspaceView,
 } from "../types";
 
-/* ------------------------------------------------------------------ */
-/*  Props                                                              */
-/* ------------------------------------------------------------------ */
-
 export interface VideoChatProps {
-  /** undefined = new session */
   initialSessionId: string | undefined;
   videoContext: VideoContext | null;
+  ensureVideoContext?: () => Promise<VideoContext | null>;
   preloadMcps: string[];
   skills: string[];
   onSessionCreated: (sessionId: string) => void;
-  /** Called when task completes — parent should refresh data. */
   onRefreshNeeded: () => void;
-  /** If set, auto-send this message on mount (e.g. after EP upload). */
   autoMessage?: string;
   executionMode: ExecutionMode;
   onExecutionModeChange: (mode: ExecutionMode) => void;
@@ -51,121 +39,68 @@ export interface VideoChatProps {
   view: WorkspaceView;
   resources: DomainResources | null;
   sequenceId: string | null;
+  checkpointPlanStatus?: "none" | "draft" | "approved";
+  onCheckpointPlanStatusChange?: (status: "none" | "draft" | "approved") => void;
+  onPlanDetected?: (plan: { title: string | null; items: string[]; raw: string }) => void;
+  onTimelineEventsChange?: (events: VideoTimelineEvent[]) => void;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
-/* ------------------------------------------------------------------ */
+function parseAgentPlanFromText(text: string): { title: string | null; items: string[] } | null {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 
-function getResourcePrompt(resource: DomainResource): string | null {
-  const data = resource.data;
-  if (!data || typeof data !== "object") return null;
-  const rec = data as Record<string, unknown>;
-  return typeof rec.prompt === "string" ? rec.prompt : null;
+  const itemRegex = /^(?:[-*]\s*)?(?:\d+[\.、\)]|[一二三四五六七八九十]+[、\.])\s*(.+)$/;
+  const items: string[] = [];
+  for (const line of lines) {
+    const match = line.match(itemRegex);
+    if (!match) continue;
+    const content = match[1]?.trim();
+    if (!content) continue;
+    items.push(content);
+  }
+
+  if (items.length < 3) return null;
+
+  let title: string | null = null;
+  for (const line of lines) {
+    const normalized = line.replace(/^#+\s*/, "").trim();
+    if (normalized.includes("计划") && normalized.length <= 40) {
+      title = normalized;
+      break;
+    }
+  }
+
+  return { title, items: items.slice(0, 10) };
 }
 
-type StoryboardAction = "copy_prompt" | "continue" | "style_ref";
-
-function parseStoryboardAction(value: string | number): StoryboardAction | null {
-  if (value === "copy_prompt") return "copy_prompt";
-  if (value === "continue") return "continue";
-  if (value === "style_ref") return "style_ref";
-  return null;
-}
-
-function buildContinueInstruction(resource: DomainResource): string {
-  const prompt = getResourcePrompt(resource);
+function buildCheckpointPlanningPrompt(userPrompt: string, imageCount: number): string {
   return [
-    "请基于该素材继续推进当前序列生成。",
-    `resource_id=${resource.id}`,
-    `category=${resource.category}`,
-    `media_type=${resource.mediaType}`,
-    `resource_title=${resource.title ?? "untitled"}`,
-    prompt ? `resource_prompt=${prompt}` : null,
+    "你现在处于 checkpoint 模式。",
+    "请先只输出执行计划，不要调用任何工具，不要开始生成素材。",
+    "计划要求：",
+    "1. 4-8 步，每步一句。",
+    "2. 第一部分必须说明将采用的默认风格（优先内置风格）。",
+    "3. 标出高成本步骤（需要确认）。",
+    `用户需求：${userPrompt}`,
+    imageCount > 0 ? `附带参考图片数量：${imageCount}` : null,
   ].filter((line): line is string => line !== null).join("\n");
 }
 
-function buildStyleRefInstruction(resource: DomainResource): string {
+function buildYoloPlannedPrompt(userPrompt: string, imageCount: number): string {
   return [
-    "请将该图片作为当前序列风格参考，并沿用该风格继续生成。",
-    `resource_id=${resource.id}`,
-    `reference_image_url=${resource.url ?? ""}`,
-    `resource_title=${resource.title ?? "untitled"}`,
-  ].join("\n");
+    "你现在处于 YOLO 模式。",
+    "请先给出简短执行计划（3-6 步），随后立刻按计划自动执行，不等待确认。",
+    `用户需求：${userPrompt}`,
+    imageCount > 0 ? `附带参考图片数量：${imageCount}` : null,
+  ].filter((line): line is string => line !== null).join("\n");
 }
-
-function renderStoryboardPreview(resource: DomainResource): React.ReactNode {
-  const videoData = resource.data as VideoResourceData | null;
-
-  if (resource.mediaType === "image") {
-    return resource.url ? (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={resource.url}
-        alt={resource.title ?? resource.category}
-        className="h-36 w-full object-cover"
-      />
-    ) : (
-      <div className="flex h-36 items-center justify-center bg-slate-100 text-xs text-slate-500">
-        No image
-      </div>
-    );
-  }
-
-  if (resource.mediaType === "video") {
-    return (
-      <>
-        {resource.url ? (
-          <video src={resource.url} controls muted className="h-36 w-full object-cover" />
-        ) : videoData?.sourceImageUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={videoData.sourceImageUrl}
-            alt={resource.title ?? "source"}
-            className="h-36 w-full object-cover opacity-60"
-          />
-        ) : (
-          <div className="flex h-36 items-center justify-center bg-slate-100 text-xs text-slate-500">
-            Pending video
-          </div>
-        )}
-      </>
-    );
-  }
-
-  return (
-    <div className="h-36 overflow-hidden px-2 py-2">
-      <Typography.Text strong style={{ fontSize: 11 }} ellipsis>
-        {resource.title ?? "JSON"}
-      </Typography.Text>
-      <pre className="mt-1 max-h-24 overflow-hidden whitespace-pre-wrap break-all text-[10px] leading-relaxed text-slate-600">
-        {typeof resource.data === "string" ? resource.data : JSON.stringify(resource.data, null, 2)}
-      </pre>
-    </div>
-  );
-}
-
-function timelineLabel(event: VideoTimelineEvent): string {
-  switch (event.type) {
-    case "tool_start":
-      return `Tool start: ${event.name ?? "unknown"}`;
-    case "tool_end":
-      if (event.error) return `Tool end (error): ${event.name ?? "unknown"}`;
-      return `Tool end: ${event.name ?? "unknown"}`;
-    case "stream_end":
-      return event.error === "stopped_by_user" ? "Stream stopped by user" : "Stream completed";
-    case "error":
-      return `Task error: ${event.error ?? "unknown"}`;
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/*  Component                                                          */
-/* ------------------------------------------------------------------ */
 
 export function VideoChat({
   initialSessionId,
   videoContext,
+  ensureVideoContext,
   preloadMcps,
   skills,
   onSessionCreated,
@@ -178,18 +113,18 @@ export function VideoChat({
   view,
   resources,
   sequenceId,
+  checkpointPlanStatus = "none",
+  onCheckpointPlanStatusChange,
+  onPlanDetected,
+  onTimelineEventsChange,
 }: VideoChatProps) {
   const { message } = App.useApp();
-  const userName = videoContext
-    ? `video:${videoContext.projectId}:${videoContext.sequenceKey}`
-    : "video:unknown";
-
   const { models, selectedModel, setSelectedModel } = useModels();
 
   const chat = useVideoChat(
     initialSessionId,
-    userName,
     videoContext,
+    ensureVideoContext,
     preloadMcps,
     skills,
     onSessionCreated,
@@ -212,6 +147,11 @@ export function VideoChat({
   } = useImageUpload((msg) => chat.setError(msg));
 
   const lastInjectedIdRef = useRef<string | null>(null);
+  const lastPlanSignatureRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    onTimelineEventsChange?.(chat.timelineEvents);
+  }, [chat.timelineEvents, onTimelineEventsChange]);
 
   useEffect(() => {
     if (!injectedMessage) return;
@@ -220,76 +160,59 @@ export function VideoChat({
     void chat.sendDirect(injectedMessage.text);
   }, [chat, injectedMessage]);
 
+  useEffect(() => {
+    const candidate = chat.streamingReply ?? [...chat.messages].reverse().find((item) => item.role === "assistant")?.content;
+    if (typeof candidate !== "string" || candidate.trim().length === 0) return;
+
+    const parsed = parseAgentPlanFromText(candidate);
+    if (!parsed) return;
+
+    const signature = `${parsed.title ?? ""}|${parsed.items.join("|")}`;
+    if (signature === lastPlanSignatureRef.current) return;
+    lastPlanSignatureRef.current = signature;
+
+    onPlanDetected?.({ title: parsed.title, items: parsed.items, raw: candidate });
+  }, [chat.messages, chat.streamingReply, onPlanDetected]);
+
   const handleSend = useCallback(() => {
+    const text = chat.input.trim();
+    const imageCount = pendingImages.length;
+    if (text.length === 0 && imageCount === 0) return;
+
+    if (executionMode === "checkpoint") {
+      if (checkpointPlanStatus === "none") {
+        const plannerPrompt = buildCheckpointPlanningPrompt(text || "(仅图片输入)", imageCount);
+        setPendingImages([]);
+        onCheckpointPlanStatusChange?.("draft");
+        void chat.sendDirect(plannerPrompt);
+        return;
+      }
+      if (checkpointPlanStatus === "draft") {
+        void message.info("请先在左侧确认计划，再继续执行。");
+        return;
+      }
+    }
+
+    if (executionMode === "yolo" && checkpointPlanStatus === "none") {
+      const yoloPrompt = buildYoloPlannedPrompt(text || "(仅图片输入)", imageCount);
+      setPendingImages([]);
+      onCheckpointPlanStatusChange?.("approved");
+      void chat.sendDirect(yoloPrompt);
+      return;
+    }
+
     const images = pendingImages.length > 0 ? [...pendingImages] : undefined;
     setPendingImages([]);
     void chat.sendMessage(images);
-  }, [chat, pendingImages, setPendingImages]);
-
-  const timelineItems = useMemo(
-    () => chat.timelineEvents
-      .slice()
-      .reverse()
-      .map((event) => ({
-        dot: <ClockCircleOutlined style={{ fontSize: 12, color: event.error ? "#ef4444" : "#2563eb" }} />,
-        children: (
-          <div className="pb-2">
-            <Typography.Text style={{ fontSize: 12 }}>{timelineLabel(event)}</Typography.Text>
-            <div className="text-[10px] text-slate-500">
-              {new Date(event.at).toLocaleTimeString()}
-              {event.durationMs !== undefined ? ` · ${event.durationMs}ms` : ""}
-              {event.index !== undefined && event.total !== undefined ? ` · ${event.index + 1}/${event.total}` : ""}
-            </div>
-          </div>
-        ),
-      })),
-    [chat.timelineEvents],
-  );
-
-  const storyboardCategories = useMemo(
-    () => resources?.categories ?? [],
-    [resources],
-  );
-
-  const handleStoryboardAction = useCallback(async (resource: DomainResource, action: StoryboardAction) => {
-    if (action === "copy_prompt") {
-      const prompt = getResourcePrompt(resource);
-      if (!prompt) {
-        void message.warning("This asset has no prompt to copy.");
-        return;
-      }
-      try {
-        await navigator.clipboard.writeText(prompt);
-        void message.success("Prompt copied.");
-      } catch {
-        void message.error("Failed to copy prompt.");
-      }
-      return;
-    }
-
-    if (action === "continue") {
-      await chat.sendDirect(buildContinueInstruction(resource));
-      void message.success("Sent to chat.");
-      return;
-    }
-
-    if (action === "style_ref") {
-      if (resource.mediaType !== "image" || !resource.url) {
-        void message.warning("Only image assets can be used as style references.");
-        return;
-      }
-      await chat.sendDirect(buildStyleRefInstruction(resource));
-      void message.success("Style reference instruction sent.");
-    }
-  }, [chat, message]);
-
-  if (!videoContext) {
-    return (
-      <div className="flex h-full items-center justify-center text-xs text-slate-500">
-        Select a sequence to start chatting
-      </div>
-    );
-  }
+  }, [
+    chat,
+    checkpointPlanStatus,
+    executionMode,
+    message,
+    onCheckpointPlanStatusChange,
+    pendingImages,
+    setPendingImages,
+  ]);
 
   return (
     <div className="flex h-full bg-white">
@@ -305,115 +228,30 @@ export function VideoChat({
             banner
           />
         )}
+        {!videoContext && (
+          <Alert
+            type="info"
+            message="可以直接输入一句话开始创作，系统会自动初始化计划。"
+            showIcon
+            style={{ margin: "4px 8px 0" }}
+            banner
+          />
+        )}
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {view === "chat" && (
+          {view === "clip" ? (
+            <ClipComposer
+              sequenceId={sequenceId}
+              resources={resources}
+              onSaved={onRefreshNeeded}
+            />
+          ) : (
             <MessageList
               messages={chat.messages}
               isLoadingSession={chat.isLoadingSession}
               error={null}
               streamingReply={chat.streamingReply}
               streamingTools={chat.streamingTools}
-            />
-          )}
-
-          {view === "timeline" && (
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-              <div className="mb-2 flex items-center justify-between">
-                <Typography.Text strong style={{ fontSize: 12 }}>Task Timeline</Typography.Text>
-                <Button size="small" onClick={chat.clearTimeline}>Clear</Button>
-              </div>
-              {timelineItems.length === 0 ? (
-                <Empty description="No timeline events yet" />
-              ) : (
-                <Timeline items={timelineItems} />
-              )}
-            </div>
-          )}
-
-          {view === "storyboard" && (
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-              <Typography.Text strong style={{ fontSize: 12 }}>Storyboard</Typography.Text>
-              {storyboardCategories.length === 0 ? (
-                <div className="mt-3">
-                  <Empty description="No resources yet" />
-                </div>
-              ) : (
-                <div className="mt-2 space-y-3">
-                  {storyboardCategories.map((group) => (
-                    <section key={group.category} className="rounded-xl border border-slate-200 bg-slate-50/40 p-2.5">
-                      <div className="mb-2 flex items-center gap-2">
-                        <Typography.Text strong style={{ fontSize: 12 }}>{group.category}</Typography.Text>
-                        <Tag style={{ margin: 0 }}>{group.items.length}</Tag>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
-                        {group.items.map((resource) => (
-                          <div key={resource.id} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-                            {renderStoryboardPreview(resource)}
-                            <div className="space-y-1 border-t border-slate-100 px-2 py-1.5">
-                              <Typography.Text style={{ fontSize: 11 }} ellipsis>
-                                {resource.title ?? `${resource.mediaType} asset`}
-                              </Typography.Text>
-                              {getResourcePrompt(resource) && (
-                                <div className="line-clamp-2 text-[10px] text-slate-500">
-                                  {getResourcePrompt(resource)}
-                                </div>
-                              )}
-                              <div className="flex items-center justify-between gap-1.5 pt-1">
-                                <div className="flex items-center gap-1.5">
-                                  {getResourcePrompt(resource) && (
-                                    <Tooltip title="Copy prompt">
-                                      <Button
-                                        size="small"
-                                        type="text"
-                                        icon={<CopyOutlined />}
-                                        onClick={() => void handleStoryboardAction(resource, "copy_prompt")}
-                                      />
-                                    </Tooltip>
-                                  )}
-                                  <Tooltip title="Continue generation from this asset">
-                                    <Button
-                                      size="small"
-                                      type="text"
-                                      icon={<PlayCircleOutlined />}
-                                      onClick={() => void handleStoryboardAction(resource, "continue")}
-                                    />
-                                  </Tooltip>
-                                </div>
-                                <Dropdown
-                                  trigger={["click"]}
-                                  menu={{
-                                    items: [
-                                      { key: "continue", label: "Continue in chat" },
-                                      ...(resource.mediaType === "image" && resource.url
-                                        ? [{ key: "style_ref", label: "Use as style reference" }]
-                                        : []),
-                                    ],
-                                    onClick: ({ key }) => {
-                                      const action = parseStoryboardAction(key);
-                                      if (action) void handleStoryboardAction(resource, action);
-                                    },
-                                  }}
-                                >
-                                  <Button size="small" type="text" icon={<MoreOutlined />} />
-                                </Dropdown>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {view === "clip" && (
-            <ClipComposer
-              sequenceId={sequenceId}
-              resources={resources}
-              onSaved={onRefreshNeeded}
             />
           )}
         </div>
@@ -471,7 +309,7 @@ export function VideoChat({
               />
               <Input.TextArea
                 autoSize={{ minRows: 1, maxRows: 4 }}
-                placeholder={isDragOver ? "松开以上传图片…" : "Chat with video agent…"}
+                placeholder={isDragOver ? "松开以上传图片…" : "输入一句话，Agent 先给计划再执行…"}
                 value={chat.input}
                 onChange={(e) => chat.setInput(e.target.value)}
                 onKeyDown={(e) => {

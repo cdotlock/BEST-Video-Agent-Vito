@@ -56,7 +56,7 @@ export interface VideoContext {
 }
 
 export type ExecutionMode = "checkpoint" | "yolo";
-export type WorkspaceView = "chat" | "timeline" | "storyboard" | "clip";
+export type WorkspaceView = "chat" | "clip";
 
 export interface VideoTimelineEvent {
   id: string;

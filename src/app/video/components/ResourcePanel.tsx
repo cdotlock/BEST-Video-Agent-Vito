@@ -1,96 +1,222 @@
 "use client";
 
 import { useState, useCallback, useRef, useMemo, useEffect } from "react";
-import { Button, Collapse, Drawer, Empty, Input, Spin, Typography, Image, Tag, App, Select } from "antd";
-import { DeleteOutlined, EditOutlined } from "@ant-design/icons";
-import type { DomainResources, DomainResource, VideoResourceData } from "../types";
+import {
+  App,
+  Button,
+  Collapse,
+  Drawer,
+  Empty,
+  Grid,
+  Input,
+  Select,
+  Spin,
+  Tag,
+  Typography,
+} from "antd";
+import {
+  BgColorsOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  ExpandOutlined,
+  LinkOutlined,
+  SyncOutlined,
+} from "@ant-design/icons";
+import { z } from "zod";
+import type { DomainResources, DomainResource } from "../types";
 import { fetchJson } from "@/app/components/client-utils";
-import { ImageDetailDrawer } from "./ImageDetailDrawer";
-import { VideoDetailDrawer } from "./VideoDetailDrawer";
-
-/* ------------------------------------------------------------------ */
-/*  Props                                                              */
-/* ------------------------------------------------------------------ */
 
 export interface ResourcePanelProps {
   resources: DomainResources | null;
   isLoading: boolean;
   sequenceId: string | null;
   onRefresh?: () => void;
+  onInjectMessage?: (message: string) => void;
   embedded?: boolean;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Component                                                          */
-/* ------------------------------------------------------------------ */
+type ResourceMediaFilter = "all" | "image" | "video" | "json";
+
+const ResourceDataSchema = z.object({
+  prompt: z.string().optional(),
+  userPrompt: z.string().optional(),
+  key: z.string().optional(),
+}).passthrough();
+
+const KeyResourceDetailSchema = z.object({
+  id: z.string().min(1),
+  prompt: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+});
 
 function buildAsideClass(embedded: boolean): string {
   if (embedded) return "flex h-full w-full flex-col bg-white";
   return "flex h-full w-72 min-w-[240px] shrink-0 flex-col border-l border-slate-200 bg-white";
 }
-type ResourceMediaFilter = "all" | "image" | "video" | "json";
+
+function readResourceData(resource: DomainResource): z.infer<typeof ResourceDataSchema> | null {
+  const parsed = ResourceDataSchema.safeParse(resource.data);
+  if (!parsed.success) return null;
+  return parsed.data;
+}
+
+function sanitizePromptForPlayer(rawPrompt: string | null): string {
+  if (!rawPrompt || rawPrompt.trim().length === 0) return "";
+
+  const blockedPrefixes = [
+    "selected_builtin_",
+    "style_tokens=",
+    "positive_prompt=",
+    "negative_prompt=",
+    "memory_",
+    "project_id:",
+    "sequence_key:",
+    "resource_id=",
+    "reference_image_url=",
+    "scopeType=",
+    "scopeId=",
+  ];
+
+  const cleaned = rawPrompt
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => {
+      const normalized = line.toLowerCase();
+      return !blockedPrefixes.some((prefix) => normalized.startsWith(prefix.toLowerCase()));
+    });
+
+  return cleaned.join("\n").slice(0, 1600);
+}
+
+function readResourcePrompt(resource: DomainResource): string | null {
+  const data = readResourceData(resource);
+  if (!data) return null;
+  const candidate = data.userPrompt ?? data.prompt ?? null;
+  if (!candidate || candidate.trim().length === 0) return null;
+  const safePrompt = sanitizePromptForPlayer(candidate);
+  return safePrompt.trim().length > 0 ? safePrompt : null;
+}
 
 function buildSearchText(resource: DomainResource): string {
   const parts: string[] = [resource.category, resource.title ?? ""];
-  if (typeof resource.data === "string") {
-    parts.push(resource.data);
-  } else if (resource.data && typeof resource.data === "object") {
-    const rec = resource.data as Record<string, unknown>;
-    if (typeof rec.prompt === "string") parts.push(rec.prompt);
-    if (typeof rec.key === "string") parts.push(rec.key);
-  }
+  const prompt = readResourcePrompt(resource);
+  if (prompt) parts.push(prompt);
+  if (typeof resource.data === "string") parts.push(resource.data);
   return parts.join(" ").toLowerCase();
 }
 
-export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, embedded = false }: ResourcePanelProps) {
+function buildAtMaterialInstruction(resource: DomainResource): string {
+  const prompt = readResourcePrompt(resource);
+  return [
+    "@该素材",
+    "请将该素材加入当前对话上下文，并基于它继续执行当前计划。",
+    `resource_id=${resource.id}`,
+    `resource_title=${resource.title ?? "untitled"}`,
+    `resource_media_type=${resource.mediaType}`,
+    prompt ? `creative_prompt=${prompt}` : null,
+  ].filter((line): line is string => line !== null).join("\n");
+}
+
+function buildStyleRefInstruction(resource: DomainResource): string {
+  const prompt = readResourcePrompt(resource);
+  return [
+    "请将该图片设为新的风格参考并继续生成。",
+    "注意：底层参考图角色映射与参数注入由系统内部处理，无需向用户展示。",
+    `resource_id=${resource.id}`,
+    `resource_title=${resource.title ?? "untitled"}`,
+    `reference_image_url=${resource.url ?? ""}`,
+    prompt ? `creative_prompt=${prompt}` : null,
+  ].filter((line): line is string => line !== null).join("\n");
+}
+
+function buildRerollInstruction(resource: DomainResource, prompt: string): string {
+  return [
+    "请基于以下创作描述重 roll 该素材。",
+    `resource_id=${resource.id}`,
+    `resource_title=${resource.title ?? "untitled"}`,
+    `resource_media_type=${resource.mediaType}`,
+    `creative_prompt=${prompt}`,
+  ].join("\n");
+}
+
+export function ResourcePanel({
+  resources,
+  isLoading,
+  sequenceId,
+  onRefresh,
+  onInjectMessage,
+  embedded = false,
+}: ResourcePanelProps) {
   const ASIDE_CLASS = buildAsideClass(embedded);
   const { message } = App.useApp();
+  const screens = Grid.useBreakpoint();
+
   const [searchText, setSearchText] = useState("");
   const [mediaFilter, setMediaFilter] = useState<ResourceMediaFilter>("all");
 
-  /* ---- JSON editor drawer state ---- */
   const [editingItem, setEditingItem] = useState<{ id: string; title: string; data: unknown } | null>(null);
   const [editText, setEditText] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
-  /* ---- Image detail drawer state ---- */
-  const [selectedImageGenId, setSelectedImageGenId] = useState<string | null>(null);
+  const [expandedOpen, setExpandedOpen] = useState(false);
 
-  /* ---- Video detail drawer state ---- */
-  const [selectedVideoResource, setSelectedVideoResource] = useState<DomainResource | null>(null);
-
-  /* ---- Collapse expand state (controlled) ---- */
   const [activeKeys, setActiveKeys] = useState<string[]>([]);
   const knownKeysRef = useRef<Set<string>>(new Set());
-
-  /* ---- Smart image rendering ---- */
-  const renderSmartImage = (url: string, alt: string, keyResourceId?: string | null) => {
-    if (keyResourceId) {
-      return (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={url}
-          alt={alt}
-          className="w-full cursor-pointer"
-          style={{ display: "block" }}
-          onClick={() => setSelectedImageGenId(keyResourceId)}
-        />
-      );
-    }
-    return (
-      <Image
-        src={url}
-        alt={alt}
-        width="100%"
-        style={{ display: "block" }}
-        placeholder={<div className="aspect-square w-full bg-slate-100" />}
-        preview={true}
-      />
-    );
-  };
-
-  /* ---- Delete handler ---- */
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+
+  const [selectedResource, setSelectedResource] = useState<DomainResource | null>(null);
+  const [detailPrompt, setDetailPrompt] = useState("");
+  const [detailPreviewUrl, setDetailPreviewUrl] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [rerolling, setRerolling] = useState(false);
+
+  const openDetail = useCallback((resource: DomainResource) => {
+    setSelectedResource(resource);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedResource) {
+      setDetailPrompt("");
+      setDetailPreviewUrl(null);
+      return;
+    }
+
+    let cancelled = false;
+    const localPrompt = readResourcePrompt(selectedResource) ?? "";
+    setDetailPrompt(localPrompt);
+    setDetailPreviewUrl(selectedResource.url);
+
+    if (!selectedResource.keyResourceId) return;
+
+    const load = async () => {
+      setDetailLoading(true);
+      try {
+        const data = await fetchJson<unknown>(`/api/key-resources/${selectedResource.keyResourceId}`);
+        const parsed = KeyResourceDetailSchema.safeParse(data);
+        if (!parsed.success || cancelled) return;
+        const prompt = sanitizePromptForPlayer(parsed.data.prompt ?? "");
+        if (prompt.trim().length > 0) {
+          setDetailPrompt(prompt);
+        }
+        if (parsed.data.url) {
+          setDetailPreviewUrl(parsed.data.url);
+        }
+      } catch {
+        // best effort
+      } finally {
+        if (!cancelled) {
+          setDetailLoading(false);
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedResource]);
 
   const handleDelete = useCallback(async (id: string) => {
     if (!sequenceId) return;
@@ -101,10 +227,10 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resourceId: id }),
       });
-      void message.success("Deleted");
+      void message.success("已删除");
       onRefresh?.();
     } catch {
-      void message.error("Delete failed");
+      void message.error("删除失败");
     } finally {
       setDeletingIds((prev) => {
         const next = new Set(prev);
@@ -112,9 +238,8 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
         return next;
       });
     }
-  }, [sequenceId, onRefresh, message]);
+  }, [message, onRefresh, sequenceId]);
 
-  /* ---- JSON editor ---- */
   const openEditor = useCallback((item: { id: string; title: string; data: unknown }) => {
     setEditingItem(item);
     setEditText(item.data != null ? JSON.stringify(item.data, null, 2) : "");
@@ -126,7 +251,7 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
     try {
       parsed = JSON.parse(editText);
     } catch {
-      void message.error("Invalid JSON");
+      void message.error("JSON 格式不合法");
       return;
     }
     setIsSaving(true);
@@ -136,19 +261,84 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resourceId: editingItem.id, data: parsed }),
       });
-      void message.success("Saved");
+      void message.success("已保存");
       setEditingItem(null);
       onRefresh?.();
     } catch {
-      void message.error("Save failed");
+      void message.error("保存失败");
     } finally {
       setIsSaving(false);
     }
-  }, [editingItem, editText, sequenceId, onRefresh, message]);
+  }, [editText, editingItem, message, onRefresh, sequenceId]);
 
-  /* ---- Per media_type renderers ---- */
+  const handleAtMaterial = useCallback((resource: DomainResource) => {
+    if (!onInjectMessage) {
+      void message.warning("当前页面无法注入对话。");
+      return;
+    }
+    onInjectMessage(buildAtMaterialInstruction(resource));
+    void message.success("已注入 @该素材 上下文。");
+  }, [message, onInjectMessage]);
 
-  /* ---- Delete overlay button (shared across media types) ---- */
+  const handleSetStyleRef = useCallback((resource: DomainResource) => {
+    if (!onInjectMessage) {
+      void message.warning("当前页面无法注入对话。");
+      return;
+    }
+    if (resource.mediaType !== "image" || !resource.url) {
+      void message.warning("仅图片素材支持设为新风格。");
+      return;
+    }
+    onInjectMessage(buildStyleRefInstruction(resource));
+    void message.success("已设为新风格并注入对话。");
+  }, [message, onInjectMessage]);
+
+  const handleRerollFromDetail = useCallback(async () => {
+    if (!selectedResource) return;
+    const prompt = detailPrompt.trim();
+    if (prompt.length === 0) {
+      void message.warning("请先填写创作描述。");
+      return;
+    }
+
+    setRerolling(true);
+    try {
+      if (selectedResource.keyResourceId) {
+        await fetchJson(`/api/key-resources/${selectedResource.keyResourceId}/regenerate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt }),
+        });
+        void message.success("已重 roll，该素材正在刷新。");
+        onRefresh?.();
+
+        const latestDetail = await fetchJson<unknown>(`/api/key-resources/${selectedResource.keyResourceId}`);
+        const parsed = KeyResourceDetailSchema.safeParse(latestDetail);
+        if (parsed.success) {
+          const nextPrompt = sanitizePromptForPlayer(parsed.data.prompt ?? prompt);
+          if (nextPrompt.trim().length > 0) {
+            setDetailPrompt(nextPrompt);
+          }
+          if (parsed.data.url) {
+            setDetailPreviewUrl(parsed.data.url);
+          }
+        }
+        return;
+      }
+
+      if (!onInjectMessage) {
+        void message.warning("当前页面无法注入对话，无法重 roll。");
+        return;
+      }
+      onInjectMessage(buildRerollInstruction(selectedResource, prompt));
+      void message.success("已发送重 roll 指令到对话。");
+    } catch {
+      void message.error("重 roll 失败，请稍后重试。");
+    } finally {
+      setRerolling(false);
+    }
+  }, [detailPrompt, message, onInjectMessage, onRefresh, selectedResource]);
+
   const renderDeleteBtn = (id: string) => (
     <Button
       type="text"
@@ -162,92 +352,84 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
     />
   );
 
-  const renderImageItem = (r: DomainResource) => (
-    <div key={r.id} className="group/card relative overflow-hidden rounded-lg">
-      {renderDeleteBtn(r.id)}
-      {r.url ? (
-        renderSmartImage(r.url, r.title ?? "Image", r.keyResourceId)
+  const renderImageItem = (resource: DomainResource) => (
+    <div
+      key={resource.id}
+      className="group/card relative w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-left"
+      onClick={() => openDetail(resource)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openDetail(resource);
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      {renderDeleteBtn(resource.id)}
+      {resource.url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={resource.url} alt={resource.title ?? "Image"} className="aspect-square w-full object-cover" />
       ) : (
-        <div className="flex aspect-square items-center justify-center bg-slate-100">
-          <span className="text-xs text-slate-500">No image</span>
+        <div className="flex aspect-square items-center justify-center bg-slate-100 text-xs text-slate-500">
+          暂无图片
         </div>
       )}
-      {r.title && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-5">
-          <div className="truncate text-center text-[11px] font-medium text-white">{r.title}</div>
-        </div>
-      )}
+      <div className="flex items-center justify-between gap-1 border-t border-slate-100 px-2 py-1.5">
+        <div className="truncate text-[11px] font-medium text-slate-700">{resource.title ?? "图片素材"}</div>
+        <Tag style={{ margin: 0, fontSize: 10 }}>image</Tag>
+      </div>
     </div>
   );
 
-  const renderVideoItem = (r: DomainResource) => {
-    const vData = r.data as VideoResourceData | null;
-    const handleClick = () => {
-      if (r.keyResourceId) {
-        setSelectedImageGenId(r.keyResourceId);
-      } else {
-        setSelectedVideoResource(r);
-      }
-    };
-    return (
-      <div key={r.id} className="group/card relative cursor-pointer overflow-hidden rounded-lg" onClick={handleClick}>
-        {renderDeleteBtn(r.id)}
-        {r.url ? (
-          <video src={r.url} controls muted className="aspect-[9/16] w-full object-cover" onClick={(e) => e.stopPropagation()} />
-        ) : vData?.sourceImageUrl ? (
-          <div className="relative">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={vData.sourceImageUrl}
-              alt={r.title ?? "Source"}
-              className="aspect-[9/16] w-full object-cover opacity-50"
-            />
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 px-2">
-              <span className="mb-1 text-[10px] font-medium text-amber-400">待生成</span>
-              {vData.prompt && (
-                <p className="line-clamp-3 text-center text-[10px] leading-relaxed text-white/80">
-                  {vData.prompt}
-                </p>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="flex aspect-[9/16] flex-col items-center justify-center bg-slate-100 px-2">
-            <span className="mb-1 text-[10px] font-medium text-amber-400">待生成</span>
-            {vData?.prompt ? (
-              <p className="line-clamp-4 text-center text-[10px] leading-relaxed text-slate-600">
-                {vData.prompt}
-              </p>
-            ) : (
-              <span className="text-xs text-slate-500">No prompt</span>
-            )}
-          </div>
-        )}
-        {r.title && (
-          <div className="px-2 py-1 text-center text-[11px] text-slate-600">{r.title}</div>
-        )}
+  const renderVideoItem = (resource: DomainResource) => (
+    <div
+      key={resource.id}
+      className="group/card relative w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-left"
+      onClick={() => openDetail(resource)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openDetail(resource);
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      {renderDeleteBtn(resource.id)}
+      {resource.url ? (
+        <video src={resource.url} muted className="aspect-[9/16] w-full object-cover" />
+      ) : (
+        <div className="flex aspect-[9/16] items-center justify-center bg-slate-100 text-xs text-slate-500">
+          待生成视频
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-1 border-t border-slate-100 px-2 py-1.5">
+        <div className="truncate text-[11px] font-medium text-slate-700">{resource.title ?? "视频素材"}</div>
+        <Tag style={{ margin: 0, fontSize: 10 }}>video</Tag>
       </div>
-    );
-  };
+    </div>
+  );
 
-  const renderJsonItem = (r: DomainResource) => {
-    const text = r.data != null
-      ? (typeof r.data === "string" ? r.data : JSON.stringify(r.data, null, 2))
+  const renderJsonItem = (resource: DomainResource) => {
+    const text = resource.data != null
+      ? (typeof resource.data === "string" ? resource.data : JSON.stringify(resource.data, null, 2))
       : "";
+
     return (
       <div
-        key={r.id}
+        key={resource.id}
         className="group/card relative cursor-pointer overflow-hidden rounded-lg border border-slate-200 bg-white"
-        onClick={() => openEditor({ id: r.id, title: r.title ?? "JSON", data: r.data })}
-        title="Click to edit"
+        onClick={() => openEditor({ id: resource.id, title: resource.title ?? "JSON", data: resource.data })}
+        title="点击编辑"
       >
-        {renderDeleteBtn(r.id)}
+        {renderDeleteBtn(resource.id)}
         <pre className="max-h-32 overflow-hidden whitespace-pre-wrap break-all px-2 pt-2 pb-8 font-mono text-[9px] leading-relaxed text-slate-600">
           {text}
         </pre>
         <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-white via-white/80 to-transparent px-2 pb-1.5 pt-6">
           <div className="flex items-center justify-between">
-            <div className="truncate text-[11px] font-medium text-slate-900">{r.title ?? "JSON"}</div>
+            <div className="truncate text-[11px] font-medium text-slate-900">{resource.title ?? "JSON"}</div>
             <EditOutlined className="text-[11px] text-slate-500" />
           </div>
         </div>
@@ -255,10 +437,10 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
     );
   };
 
-  /* ---- Auto-expand newly appeared categories, preserve existing expand state ---- */
   const categories = useMemo(() => {
     if (!resources) return [];
     const needle = searchText.trim().toLowerCase();
+
     return resources.categories
       .map((group) => ({
         ...group,
@@ -270,10 +452,12 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
       }))
       .filter((group) => group.items.length > 0);
   }, [mediaFilter, resources, searchText]);
+
   const totalResourceCount = useMemo(() => {
     if (!resources) return 0;
     return resources.categories.reduce((sum, group) => sum + group.items.length, 0);
   }, [resources]);
+
   const categoryKeys = useMemo(() => categories.map((g) => `cat-${g.category}`), [categories]);
   useEffect(() => {
     const newKeys = categoryKeys.filter((k) => !knownKeysRef.current.has(k));
@@ -283,7 +467,28 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
     }
   }, [categoryKeys]);
 
-  /* ---- Main render ---- */
+  const collapseItems = categories.map((group) => {
+    const images = group.items.filter((item) => item.mediaType === "image");
+    const videos = group.items.filter((item) => item.mediaType === "video");
+    const jsons = group.items.filter((item) => item.mediaType === "json");
+
+    return {
+      key: `cat-${group.category}`,
+      label: (
+        <span className="flex items-center gap-1.5 text-xs font-medium">
+          {group.category}
+          <Tag style={{ fontSize: 10, lineHeight: "16px", margin: 0 }}>{group.items.length}</Tag>
+        </span>
+      ),
+      children: (
+        <div className="space-y-2">
+          {images.length > 0 && <div className="grid grid-cols-2 gap-2">{images.map(renderImageItem)}</div>}
+          {videos.length > 0 && <div className="grid grid-cols-2 gap-2">{videos.map(renderVideoItem)}</div>}
+          {jsons.length > 0 && <div className="space-y-2">{jsons.map(renderJsonItem)}</div>}
+        </div>
+      ),
+    };
+  });
 
   if (isLoading) {
     return (
@@ -296,8 +501,8 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
   if (!resources) {
     return (
       <aside className={ASIDE_CLASS}>
-        <div className="flex flex-1 items-center justify-center text-xs text-slate-500">
-          Select an episode
+        <div className="flex flex-1 items-center justify-center px-3 text-center text-xs text-slate-500">
+          先在对话里说一句你想创作的内容，Agent 会自动给计划并开始执行。
         </div>
       </aside>
     );
@@ -307,46 +512,31 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
     return (
       <aside className={ASIDE_CLASS}>
         <div className="flex flex-1 items-center justify-center">
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No resources yet" />
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无素材" />
         </div>
       </aside>
     );
   }
 
-  const items = [
-    ...categories.map((g) => {
-      const images = g.items.filter((r) => r.mediaType === "image");
-      const videos = g.items.filter((r) => r.mediaType === "video");
-      const jsons = g.items.filter((r) => r.mediaType === "json");
-
-      return {
-        key: `cat-${g.category}`,
-        label: (
-          <span className="flex items-center gap-1.5 text-xs font-medium">
-            {g.category}
-            <Tag style={{ fontSize: 10, lineHeight: "16px", margin: 0 }}>{g.items.length}</Tag>
-          </span>
-        ),
-        children: (
-          <div className="space-y-2">
-            {images.length > 0 && <div className="grid grid-cols-2 gap-2">{images.map(renderImageItem)}</div>}
-            {videos.length > 0 && <div className="grid grid-cols-2 gap-2">{videos.map(renderVideoItem)}</div>}
-            {jsons.length > 0 && <div className="space-y-2">{jsons.map(renderJsonItem)}</div>}
-          </div>
-        ),
-      };
-    }),
-  ];
-
   return (
     <>
       <aside className={ASIDE_CLASS}>
         <div className="border-b border-slate-200 px-3 py-2">
-          <Typography.Text strong style={{ fontSize: 12 }}>Resources</Typography.Text>
-          <div className="mt-2 grid grid-cols-1 gap-2">
+          <div className="mb-2 flex items-center justify-between">
+            <Typography.Text strong style={{ fontSize: 12 }}>素材面板</Typography.Text>
+            <div className="flex items-center gap-1">
+              <Button
+                size="small"
+                icon={<ExpandOutlined />}
+                onClick={() => setExpandedOpen(true)}
+                title="展开素材"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-2">
             <Input
               size="small"
-              placeholder="Search title / prompt"
+              placeholder="搜索素材标题 / 描述"
               value={searchText}
               onChange={(event) => setSearchText(event.target.value)}
               allowClear
@@ -356,46 +546,213 @@ export function ResourcePanel({ resources, isLoading, sequenceId, onRefresh, emb
               value={mediaFilter}
               onChange={setMediaFilter}
               options={[
-                { value: "all", label: "All media" },
-                { value: "image", label: "Images" },
-                { value: "video", label: "Videos" },
+                { value: "all", label: "全部媒体" },
+                { value: "image", label: "图片" },
+                { value: "video", label: "视频" },
                 { value: "json", label: "JSON" },
               ]}
             />
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
-          {items.length === 0 ? (
+          {collapseItems.length === 0 ? (
             <div className="flex h-full items-center justify-center px-2 text-center text-[11px] text-slate-500">
-              No resources match current filters.
+              当前筛选下没有素材。
             </div>
           ) : (
-            <Collapse activeKey={activeKeys} onChange={(keys) => setActiveKeys(keys as string[])} items={items} size="small" ghost />
+            <Collapse
+              activeKey={activeKeys}
+              onChange={(keys) => {
+                if (Array.isArray(keys)) {
+                  setActiveKeys(keys.map((key) => String(key)));
+                  return;
+                }
+                if (typeof keys === "string") {
+                  setActiveKeys([keys]);
+                  return;
+                }
+                setActiveKeys([]);
+              }}
+              items={collapseItems}
+              size="small"
+              ghost
+            />
           )}
         </div>
       </aside>
 
-      <ImageDetailDrawer
-        imageGenId={selectedImageGenId}
-        onClose={() => setSelectedImageGenId(null)}
-        onRefresh={() => onRefresh?.()}
-      />
+      <Drawer
+        title="素材浏览（展开）"
+        width={screens.lg ? 1080 : "100%"}
+        open={expandedOpen}
+        onClose={() => setExpandedOpen(false)}
+      >
+        {categories.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无素材" />
+        ) : (
+          <div className="space-y-3">
+            {categories.map((group) => (
+              <section key={group.category} className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <Typography.Text strong style={{ fontSize: 13 }}>{group.category}</Typography.Text>
+                  <Tag style={{ margin: 0 }}>{group.items.length}</Tag>
+                </div>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {group.items.map((resource) => {
+                    const isImage = resource.mediaType === "image";
+                    const isVideo = resource.mediaType === "video";
+                    const isJson = resource.mediaType === "json";
 
-      <VideoDetailDrawer
-        resource={selectedVideoResource}
-        onClose={() => setSelectedVideoResource(null)}
-      />
+                    return (
+                      <article key={resource.id} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                        <button
+                          type="button"
+                          className="block w-full text-left"
+                          onClick={() => openDetail(resource)}
+                        >
+                          {isImage && resource.url && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={resource.url} alt={resource.title ?? "image"} className="h-40 w-full object-cover" />
+                          )}
+                          {isVideo && resource.url && (
+                            <video src={resource.url} muted className="h-40 w-full object-cover" />
+                          )}
+                          {isJson && (
+                            <pre className="max-h-40 overflow-hidden whitespace-pre-wrap break-all px-2 py-2 text-[10px] leading-relaxed text-slate-600">
+                              {typeof resource.data === "string" ? resource.data : JSON.stringify(resource.data, null, 2)}
+                            </pre>
+                          )}
+                          {!resource.url && (isImage || isVideo) && (
+                            <div className="flex h-40 items-center justify-center bg-slate-100 text-xs text-slate-500">
+                              待生成素材
+                            </div>
+                          )}
+                        </button>
+
+                        <div className="space-y-1 px-2 py-2">
+                          <div className="truncate text-[12px] font-medium text-slate-800">
+                            {resource.title ?? `${resource.mediaType} 素材`}
+                          </div>
+                          <div className="flex flex-wrap gap-1 pt-1">
+                            <Button
+                              size="small"
+                              type="primary"
+                              icon={<LinkOutlined />}
+                              onClick={() => handleAtMaterial(resource)}
+                            >
+                              @该素材
+                            </Button>
+                            {isImage && resource.url && (
+                              <Button
+                                size="small"
+                                icon={<BgColorsOutlined />}
+                                onClick={() => handleSetStyleRef(resource)}
+                              >
+                                设为新风格
+                              </Button>
+                            )}
+                            <Button
+                              size="small"
+                              icon={<SyncOutlined />}
+                              onClick={() => openDetail(resource)}
+                            >
+                              重 roll
+                            </Button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+      </Drawer>
 
       <Drawer
-        title={editingItem?.title ?? "Edit JSON"}
+        title={selectedResource ? (selectedResource.title ?? "素材详情") : "素材详情"}
+        width={screens.lg ? 980 : "100%"}
+        open={selectedResource !== null}
+        onClose={() => setSelectedResource(null)}
+        destroyOnClose
+      >
+        {!selectedResource ? null : (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+              系统内置提示词已保护，仅展示可编辑创作描述层。
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <div className="rounded-lg border border-slate-200 bg-white p-2">
+                {detailLoading ? (
+                  <div className="flex h-72 items-center justify-center"><Spin /></div>
+                ) : selectedResource.mediaType === "image" ? (
+                  detailPreviewUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={detailPreviewUrl} alt={selectedResource.title ?? "image"} className="h-72 w-full rounded object-contain" />
+                  ) : (
+                    <div className="flex h-72 items-center justify-center text-xs text-slate-500">暂无图片预览</div>
+                  )
+                ) : selectedResource.mediaType === "video" ? (
+                  detailPreviewUrl ? (
+                    <video src={detailPreviewUrl} controls className="h-72 w-full rounded bg-black object-contain" />
+                  ) : (
+                    <div className="flex h-72 items-center justify-center text-xs text-slate-500">暂无视频预览</div>
+                  )
+                ) : (
+                  <pre className="h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-50 p-2 text-[10px] leading-relaxed text-slate-600">
+                    {typeof selectedResource.data === "string" ? selectedResource.data : JSON.stringify(selectedResource.data, null, 2)}
+                  </pre>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                <Typography.Text strong style={{ fontSize: 12 }}>创作描述（可编辑）</Typography.Text>
+                <Input.TextArea
+                  className="mt-2"
+                  autoSize={{ minRows: 12, maxRows: 20 }}
+                  value={detailPrompt}
+                  onChange={(event) => setDetailPrompt(event.target.value)}
+                  placeholder="描述你希望该素材呈现的画面、动作、镜头与风格"
+                  style={{ fontSize: 12 }}
+                />
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button type="primary" icon={<LinkOutlined />} onClick={() => handleAtMaterial(selectedResource)}>
+                    @该素材
+                  </Button>
+                  {selectedResource.mediaType === "image" && selectedResource.url && (
+                    <Button icon={<BgColorsOutlined />} onClick={() => handleSetStyleRef(selectedResource)}>
+                      设为新风格
+                    </Button>
+                  )}
+                  <Button
+                    icon={<SyncOutlined />}
+                    type="default"
+                    loading={rerolling}
+                    onClick={() => void handleRerollFromDetail()}
+                    disabled={selectedResource.mediaType === "json"}
+                  >
+                    重 roll
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </Drawer>
+
+      <Drawer
+        title={editingItem?.title ?? "编辑 JSON"}
         open={!!editingItem}
         onClose={() => setEditingItem(null)}
         styles={{ wrapper: { width: 520 } }}
-        extra={
+        extra={(
           <Button type="primary" size="small" onClick={() => void handleSave()} loading={isSaving}>
-            Save
+            保存
           </Button>
-        }
+        )}
       >
         <Input.TextArea
           value={editText}

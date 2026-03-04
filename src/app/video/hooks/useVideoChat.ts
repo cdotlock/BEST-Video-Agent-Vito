@@ -82,8 +82,8 @@ export interface UseVideoChatReturn {
 
 export function useVideoChat(
   initialSessionId: string | undefined,
-  userName: string,
   videoContext: VideoContext | null,
+  ensureVideoContext: (() => Promise<VideoContext | null>) | undefined,
   preloadMcps: string[],
   skills: string[],
   onSessionCreated: (sessionId: string) => void,
@@ -148,11 +148,20 @@ export function useVideoChat(
         refreshTimerRef.current = setTimeout(() => {
           onRefreshNeededRef.current();
         }, 600);
+      } else if (type === "key_resource") {
+        if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = setTimeout(() => {
+          onRefreshNeededRef.current();
+        }, 300);
       }
     },
     onStreamEnd: () => {
       setActiveTool(null);
       appendTimelineEvent({ type: "stream_end" });
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(() => {
+        onRefreshNeededRef.current();
+      }, 250);
     },
   });
 
@@ -160,7 +169,7 @@ export function useVideoChat(
   const autoFiredRef = useRef(false);
 
   useEffect(() => {
-    if (!initialSessionId && autoMessage && videoContext && !autoFiredRef.current) {
+    if (!initialSessionId && autoMessage && !autoFiredRef.current) {
       autoFiredRef.current = true;
       void submitText(autoMessage);
     } else if (!initialSessionId && !stream.isSending) {
@@ -183,7 +192,13 @@ export function useVideoChat(
   }, []);
 
   const submitText = useCallback(async (text: string, images?: string[]) => {
-    if ((!text && !images?.length) || stream.isSending || !videoContext) return;
+    if ((!text && !images?.length) || stream.isSending) return;
+    const effectiveContext = videoContext ?? (ensureVideoContext ? await ensureVideoContext() : null);
+    if (!effectiveContext) {
+      stream.setError("工作序列初始化失败，请重试。");
+      return;
+    }
+    const effectiveUser = `video:${effectiveContext.projectId}:${effectiveContext.sequenceKey}`;
 
     stream.setError(null);
     stream.markSendStarted();
@@ -204,9 +219,9 @@ export function useVideoChat(
     try {
       const payload: SubmitVideoTaskRequest = {
         message: text || "(image)",
-        user: userName,
+        user: effectiveUser,
         memory_user: memoryUser ?? "default",
-        video_context: videoContext,
+        video_context: effectiveContext,
         preload_mcps: preloadMcps,
         skills,
         execution_mode: executionMode,
@@ -242,7 +257,7 @@ export function useVideoChat(
       stream.setStatus("error");
       stream.markSendFinished();
     }
-  }, [appendTimelineEvent, executionMode, generateTitle, memoryUser, model, preloadMcps, skills, stream, userName, videoContext]);
+  }, [appendTimelineEvent, ensureVideoContext, executionMode, generateTitle, memoryUser, model, preloadMcps, skills, stream, videoContext]);
 
   const sendMessage = useCallback(async (images?: string[]) => {
     const text = stream.input.trim();

@@ -43,6 +43,7 @@ export interface StyleInitPanelProps {
   onInjectMessage: (message: string) => void;
   openSignal?: number;
   onOpenChange?: (open: boolean) => void;
+  showInlineTrigger?: boolean;
 }
 
 export function StyleInitPanel({
@@ -53,6 +54,7 @@ export function StyleInitPanel({
   onInjectMessage,
   openSignal,
   onOpenChange,
+  showInlineTrigger = true,
 }: StyleInitPanelProps) {
   const { message } = App.useApp();
   const screens = Grid.useBreakpoint();
@@ -243,7 +245,7 @@ export function StyleInitPanel({
 
   const applyProfileToSequence = useCallback(async (profile: StyleProfile) => {
     if (!sequenceId || !sequenceKey) {
-      throw new Error("请先选择序列");
+      throw new Error("请先选择计划");
     }
     await fetchJson(`/api/video/sequences/${encodeURIComponent(sequenceId)}/style-profile`, {
       method: "PATCH",
@@ -260,7 +262,7 @@ export function StyleInitPanel({
   const buildInjectInstruction = useCallback((profile: StyleProfile): string => {
     const tokenText = profile.styleTokens.join(", ");
     return [
-      `请将风格档案 \"${profile.name}\" 应用于当前序列。`,
+      `请将风格档案 \"${profile.name}\" 应用于当前计划。`,
       `sequence_key=${sequenceKey ?? "unknown"}`,
       `style_profile_id=${profile.id}`,
       `style_tokens=${tokenText}`,
@@ -364,27 +366,29 @@ export function StyleInitPanel({
 
   return (
     <>
-      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <div className="min-w-0">
-          <Typography.Text strong style={{ fontSize: 12 }}>Style Init</Typography.Text>
-          <div className="text-[10px] text-slate-500">
-            Search references, reverse prompts, save profile.
+      {showInlineTrigger && (
+        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
+          <div className="min-w-0">
+            <Typography.Text strong style={{ fontSize: 12 }}>风格初始化</Typography.Text>
+            <div className="text-[10px] text-slate-500">
+              搜图、反推、保存并应用风格档案。
+            </div>
           </div>
+          <Button
+            size="small"
+            icon={<BgColorsOutlined />}
+            onClick={() => changeOpen(true)}
+            disabled={!sequenceId || !sequenceKey}
+          >
+            打开
+          </Button>
         </div>
-        <Button
-          size="small"
-          icon={<BgColorsOutlined />}
-          onClick={() => changeOpen(true)}
-          disabled={!sequenceId || !sequenceKey}
-        >
-          Open
-        </Button>
-      </div>
+      )}
 
       <Drawer
         open={open}
         onClose={() => changeOpen(false)}
-        title="Style Initialization"
+        title="风格初始化"
         width={drawerWidth}
       >
         <div className="space-y-3">
@@ -398,10 +402,10 @@ export function StyleInitPanel({
             />
           )}
 
-          <Card size="small" title="1) Search Public Gallery">
+          <Card size="small" title="1) 搜索公共图库">
             {recommendations && recommendations.totalPreferenceItems > 0 && (
               <div className="mb-2 rounded border border-emerald-300/50 bg-emerald-50 px-2 py-1.5 text-[11px] text-emerald-900">
-                <div className="font-medium">Memory Defaults (Auto-on)</div>
+                <div className="font-medium">长期记忆默认项（自动启用）</div>
                 <div className="mt-1 flex flex-wrap gap-1">
                   {recommendations.preferredStyleTokens.slice(0, 6).map((token) => (
                     <Tag key={token} color="green">{token}</Tag>
@@ -426,7 +430,7 @@ export function StyleInitPanel({
                     onClick={() => void loadPathRecommendations()}
                     loading={isPathReviewing}
                   >
-                    Refresh
+                    刷新
                   </Button>
                 </div>
                 <div className="space-y-2">
@@ -444,14 +448,14 @@ export function StyleInitPanel({
                             onClick={() => void handleAdoptPath(path)}
                             loading={isPathReviewing}
                           >
-                            Adopt
+                            采用
                           </Button>
                           <Button
                             size="small"
                             onClick={() => void handleRejectPath(path)}
                             loading={isPathReviewing}
                           >
-                            Skip
+                            跳过
                           </Button>
                         </div>
                       </div>
@@ -487,7 +491,7 @@ export function StyleInitPanel({
                 loading={searching}
                 onClick={() => void handleSearch()}
               >
-                Search
+                搜索
               </Button>
             </div>
 
@@ -535,15 +539,15 @@ export function StyleInitPanel({
                   })}
                 </div>
               ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No references yet" />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无参考图" />
               )}
             </div>
           </Card>
 
-          <Card size="small" title="2) Reverse Prompt + Save Profile">
+          <Card size="small" title="2) 反推 Prompt 并保存档案">
             <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
               <Input
-                placeholder="Profile name"
+                placeholder="风格档案名"
                 value={profileName}
                 onChange={(e) => setProfileName(e.target.value)}
               />
@@ -560,23 +564,23 @@ export function StyleInitPanel({
                 onClick={() => void handleReverse()}
                 disabled={selectedReferenceItems.length === 0}
               >
-                Reverse & Save ({selectedReferenceItems.length})
+                反推并保存 ({selectedReferenceItems.length})
               </Button>
             </div>
 
             {reverseResult && (
               <div className="mt-3 space-y-2 rounded border border-slate-200 bg-slate-50 p-3">
-                <Typography.Text strong style={{ fontSize: 12 }}>Tokens</Typography.Text>
+                <Typography.Text strong style={{ fontSize: 12 }}>风格关键词</Typography.Text>
                 <div className="flex flex-wrap gap-1.5">
                   {reverseResult.styleTokens.map((token) => (
                     <Tag key={token}>{token}</Tag>
                   ))}
                 </div>
                 <Typography.Paragraph copyable style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontSize: 12 }}>
-                  Positive: {reverseResult.positivePrompt}
+                  正向提示词: {reverseResult.positivePrompt}
                 </Typography.Paragraph>
                 <Typography.Paragraph copyable style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontSize: 12 }}>
-                  Negative: {reverseResult.negativePrompt}
+                  负向提示词: {reverseResult.negativePrompt}
                 </Typography.Paragraph>
                 <div className="text-[11px] text-slate-500">
                   {reverseResult.analysis.summary} (confidence {reverseResult.analysis.confidence})
@@ -587,7 +591,7 @@ export function StyleInitPanel({
                   onClick={() => void handleInject()}
                   loading={applyingProfile}
                 >
-                  Apply To Chat
+                  应用并注入对话
                 </Button>
               </div>
             )}
@@ -595,15 +599,15 @@ export function StyleInitPanel({
 
           <Card
             size="small"
-            title="Saved Profiles"
+            title="已保存风格档案"
             extra={
               <Button size="small" loading={loadingProfiles} onClick={() => void loadProfiles()}>
-                Refresh
+                刷新
               </Button>
             }
           >
             {profiles.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No saved profiles" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无已保存风格档案" />
             ) : (
               <div className="space-y-2">
                 {profiles.slice(0, 6).map((profile) => (
@@ -612,7 +616,7 @@ export function StyleInitPanel({
                       <Typography.Text strong style={{ fontSize: 12 }} ellipsis>
                         {profile.name}
                       </Typography.Text>
-                      <Tag>{profile.styleTokens.length} tokens</Tag>
+                      <Tag>{profile.styleTokens.length} 个关键词</Tag>
                     </div>
                     <div className="mt-1 line-clamp-2 text-[11px] text-slate-500">
                       {profile.styleTokens.join(", ")}
@@ -625,7 +629,7 @@ export function StyleInitPanel({
                         onClick={() => void handleApplySavedProfile(profile)}
                         loading={applyingProfile}
                       >
-                        Apply
+                        应用
                       </Button>
                     </div>
                   </div>

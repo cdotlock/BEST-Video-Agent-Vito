@@ -16,6 +16,7 @@ import {
 } from "@/lib/services/video-memory-service";
 import { getStyleProfileById } from "@/lib/services/style-profile-service";
 import { getSequenceRuntimeContext } from "@/lib/services/video-workflow-service";
+import { listBuiltinStylePresets, pickBuiltinStylePreset } from "@/lib/video/builtin-style-presets";
 
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
@@ -36,13 +37,16 @@ export class VideoContextProvider implements ContextProvider {
 
   async build(): Promise<string> {
     const { projectId, sequenceKey, memoryUser } = this.config;
+    const builtinPresets = listBuiltinStylePresets();
     const [runtimeContext, memory] = await Promise.all([
       getSequenceRuntimeContext(projectId, sequenceKey),
       getMemoryRecommendations(memoryUser),
     ]);
+    const goalSnippet = runtimeContext?.sequenceContent?.slice(0, 300) ?? null;
+    const defaultStylePreset = pickBuiltinStylePreset(goalSnippet);
     const pathRecommendations = await recommendWorkflowPaths({
       memoryUser,
-      goal: runtimeContext?.sequenceContent?.slice(0, 300) ?? null,
+      goal: goalSnippet,
       storyboardDensity: null,
       hasReferenceVideo: false,
       wantsMultiClip: false,
@@ -94,6 +98,20 @@ export class VideoContextProvider implements ContextProvider {
       }
     }
 
+    lines.push("");
+    lines.push("## Builtin Style Policy");
+    lines.push("Use builtin style presets as default behavior for first response.");
+    lines.push("Only trigger custom style initialization when user explicitly asks for extra style control,");
+    lines.push("or says the current style is unsatisfactory.");
+    lines.push(`builtin_style_catalog_count: ${builtinPresets.length}`);
+    lines.push(`selected_builtin_style_id: ${defaultStylePreset.id}`);
+    lines.push(`selected_builtin_style_name: ${defaultStylePreset.name}`);
+    lines.push(`selected_builtin_style_description: ${defaultStylePreset.description}`);
+    lines.push(`selected_builtin_style_tokens: ${defaultStylePreset.styleTokens.join(", ")}`);
+    lines.push(`selected_builtin_positive_prompt: ${defaultStylePreset.positivePrompt}`);
+    lines.push(`selected_builtin_negative_prompt: ${defaultStylePreset.negativePrompt}`);
+    lines.push(`builtin_style_catalog_ids: ${builtinPresets.map((preset) => preset.id).join(", ")}`);
+
     if (runtimeContext?.sequenceContent) {
       const content = runtimeContext.sequenceContent.length > 1800
         ? `${runtimeContext.sequenceContent.slice(0, 1800)}...`
@@ -107,7 +125,7 @@ export class VideoContextProvider implements ContextProvider {
       const profile = await getStyleProfileById(runtimeContext.activeStyleProfileId);
       if (profile) {
         lines.push("");
-        lines.push("## Style Layer");
+        lines.push("## Style Layer (User Custom)");
         lines.push(`active_style_profile_id: ${profile.id}`);
         lines.push(`style_profile_name: ${profile.name}`);
         if (profile.styleTokens.length > 0) {
@@ -116,6 +134,12 @@ export class VideoContextProvider implements ContextProvider {
         lines.push(`positive_prompt: ${profile.positivePrompt}`);
         lines.push(`negative_prompt: ${profile.negativePrompt}`);
       }
+    } else {
+      lines.push("");
+      lines.push("## Style Layer (Builtin Default)");
+      lines.push(`style_tokens: ${defaultStylePreset.styleTokens.join(", ")}`);
+      lines.push(`positive_prompt: ${defaultStylePreset.positivePrompt}`);
+      lines.push(`negative_prompt: ${defaultStylePreset.negativePrompt}`);
     }
 
     return lines.join("\n");

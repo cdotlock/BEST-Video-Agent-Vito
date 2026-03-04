@@ -12,9 +12,13 @@ export default function AntdProvider({
     <AntdRegistry>
       <ConfigProvider
         theme={{
-          algorithm: theme.darkAlgorithm,
+          algorithm: theme.defaultAlgorithm,
           token: {
             colorPrimary: "#1668dc",
+            colorBgLayout: "#f5f7fa",
+            colorText: "#111827",
+            colorTextSecondary: "#6b7280",
+            borderRadius: 12,
           },
         }}
       >
