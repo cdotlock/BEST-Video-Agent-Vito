@@ -92,8 +92,10 @@
    - `Style`
    - `Pro`
 2. 中间主舞台
+   - 顶部 `Director Console`
    - Chat 导演台或 Clip Studio
 3. 右侧资产图谱
+   - 顶部 `Resource Mix / Semantic Roles / Quick Routes`
    - 按媒体维度组织
    - 按 Agent 命名 Group 展示
    - Inspector 详情抽屉
@@ -171,6 +173,7 @@ Checkpoint 模式的首轮不能直接执行，必须至少覆盖：
 3. 模式提示
 4. 图片上传入口
 5. 清晰的主发送按钮
+6. 与上方 `Director Console` 快速编排动作一致的自然语言执行入口
 
 可增强但不喧宾夺主：
 
@@ -198,6 +201,12 @@ Checkpoint 模式的首轮不能直接执行，必须至少覆盖：
 7. 粗剪方案
 
 目标是让用户理解“这一组素材在创作里扮演什么角色”。
+
+当前实现约定：
+
+1. Asset Atlas 顶部先显示 `Resource Mix` 与 `Semantic Roles`
+2. `Quick Routes` 将常见高价值路径显式化，例如补四宫格、走首尾帧、补空镜、进入粗剪
+3. 这些快速路径只是导演动作的快捷入口，不是隐藏黑盒流程
 
 ## 5.2 Gallery 规格
 
@@ -263,24 +272,27 @@ Style 面板负责：
 
 Pro 是高级配置面板，但不暴露源码编辑。
 
-建议分为 5 个 Tab：
+建议分为 6 个 Tab：
 
 1. `Knowledge`
    - 用户知识补充、长期禁忌、偏好
 2. `Templates`
    - workflow 模板与默认策略
-3. `Memory`
+3. `Atelier`
+   - 将分镜密度、参考路线、角色/空镜/对白/粗剪策略显式编排成导演蓝图
+4. `Memory`
    - memory user、记忆清理、近期提炼结果
-4. `Review`
+5. `Review`
    - checkpoint 强度、自评审开关、默认确认策略
-5. `Capabilities`
+6. `Capabilities`
    - 可用 MCP/Skill 叠层与建议，不直接暴露源码
 
 当前实现约定：
 
-1. `Pro` 已按 `Knowledge / Templates / Memory / Review / Capabilities` 五层抽屉落地
-2. `Memory` tab 直接展示长期偏好摘要、路径推荐、剪辑偏好、镜头语言偏好与模型偏好
-3. `Capabilities` tab 仅展示绑定的 MCP / Skill / Prompt Compiler layer
+1. `Pro` 已按 `Knowledge / Templates / Atelier / Memory / Review / Capabilities` 六层抽屉落地
+2. `Atelier` 以显式导演杠杆组织 workflow，而不是逼用户手写整段 prompt
+3. `Memory` tab 直接展示长期偏好摘要、路径推荐、剪辑偏好、镜头语言偏好与模型偏好
+4. `Capabilities` tab 仅展示绑定的 MCP / Skill / Prompt Compiler layer
 
 ## 7. Clip Studio
 

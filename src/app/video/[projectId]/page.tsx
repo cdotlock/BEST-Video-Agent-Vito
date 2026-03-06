@@ -21,6 +21,7 @@ import { ResourcePanel } from "../components/ResourcePanel";
 import { ProSettingsDrawer } from "../components/ProSettingsDrawer";
 import { VideoChat } from "../components/VideoChat";
 import { StyleInitPanel } from "../components/StyleInitPanel";
+import { DirectorConsolePanel } from "../components/DirectorConsolePanel";
 import type {
   VideoContext,
   ExecutionMode,
@@ -427,6 +428,21 @@ export default function VideoWorkflowPage() {
               onInjectMessage={handleInjectMessage}
               openSignal={styleInitOpenSignal}
               showInlineTrigger={false}
+            />
+
+            <DirectorConsolePanel
+              resources={data.resources}
+              executionMode={executionMode}
+              memoryUser={memoryUser}
+              proConfig={proConfig}
+              contextMaterialCount={contextMaterials.length}
+              styleReferenceCount={styleReferenceMaterials.length}
+              capabilitySkills={DEFAULT_SKILLS}
+              capabilityMcps={DEFAULT_MCPS}
+              onInjectMessage={handleInjectMessage}
+              onOpenStyle={() => void openStyleInit()}
+              onOpenPro={() => setProOpen(true)}
+              onSwitchToClip={() => setWorkspaceView("clip")}
             />
 
             <div className="min-h-0 flex-1">

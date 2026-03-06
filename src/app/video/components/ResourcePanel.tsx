@@ -62,6 +62,16 @@ const KeyResourceDetailSchema = z.object({
   url: z.string().nullable().optional(),
 });
 
+interface AtlasQuickAction {
+  id: string;
+  label: string;
+  hint: string;
+  kind: "inject" | "style" | "clip";
+  message?: string;
+}
+
+type RoleCountMap = Record<VideoReferenceRole, number>;
+
 function buildAsideClass(embedded: boolean): string {
   if (embedded) return "ceramic-panel ceramic-resource-panel flex h-full w-full flex-col";
   return "ceramic-panel ceramic-resource-panel flex h-full w-72 min-w-[240px] shrink-0 flex-col";
@@ -69,6 +79,20 @@ function buildAsideClass(embedded: boolean): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function createRoleCountMap(): RoleCountMap {
+  return {
+    style_ref: 0,
+    scene_ref: 0,
+    empty_shot_ref: 0,
+    character_ref: 0,
+    motion_ref: 0,
+    first_frame_ref: 0,
+    last_frame_ref: 0,
+    storyboard_ref: 0,
+    dialogue_ref: 0,
+  };
 }
 
 function getReferenceRoleLabel(resource: DomainResource): string | null {
@@ -245,6 +269,102 @@ function semanticRoleActionLabel(role: VideoReferenceRole): string {
         sortOrder: 0,
       }) ?? role;
   }
+}
+
+function countAtlasRoles(resources: DomainResources | null): RoleCountMap {
+  const counts = createRoleCountMap();
+  if (!resources) return counts;
+
+  for (const group of resources.categories) {
+    for (const item of group.items) {
+      const role = inferReferenceRole({
+        category: item.category,
+        mediaType: item.mediaType,
+        title: item.title,
+        data: item.data,
+      });
+      if (!role) continue;
+      counts[role] += 1;
+    }
+  }
+
+  return counts;
+}
+
+function buildAtlasQuickActions(input: {
+  roleCounts: RoleCountMap;
+  imageCount: number;
+  videoCount: number;
+}): AtlasQuickAction[] {
+  const actions: AtlasQuickAction[] = [];
+
+  if (input.roleCounts.storyboard_ref === 0 && input.imageCount > 0) {
+    actions.push({
+      id: "storyboard-grid",
+      label: "补四宫格",
+      hint: "先扩探索面",
+      kind: "inject",
+      message: "请基于当前项目和现有素材，先做一轮四宫格分镜探索，确认镜头关系和节奏，再推进后续生成。",
+    });
+  }
+
+  if (input.roleCounts.first_frame_ref > 0 && input.roleCounts.last_frame_ref > 0) {
+    actions.push({
+      id: "first-last",
+      label: "首尾帧路线",
+      hint: "更受控的视频候选",
+      kind: "inject",
+      message: "请优先使用当前首帧和尾帧参考生成 2 到 3 条视频候选，并比较动作连贯性与收尾稳定性。",
+    });
+  } else if (input.roleCounts.first_frame_ref > 0) {
+    actions.push({
+      id: "first-frame",
+      label: "首帧视频",
+      hint: "快速推进视频",
+      kind: "inject",
+      message: "请优先使用当前首帧参考推进视频生成，必要时补尾帧或 mixed refs。",
+    });
+  }
+
+  if (input.roleCounts.character_ref === 0 && input.imageCount > 0) {
+    actions.push({
+      id: "character",
+      label: "补角色锚点",
+      hint: "先稳身份一致性",
+      kind: "inject",
+      message: "请优先整理或生成角色锚点，稳定人物身份特征后再继续视频生成。",
+    });
+  }
+
+  if (input.roleCounts.empty_shot_ref === 0) {
+    actions.push({
+      id: "empty-shot",
+      label: "补空镜",
+      hint: "给节奏呼吸",
+      kind: "inject",
+      message: "请补一组 scene_ref 和 empty_shot_ref，用来建立空间、气氛和转场节奏。",
+    });
+  }
+
+  if (input.videoCount >= 2) {
+    actions.push({
+      id: "rough-cut",
+      label: "进入粗剪",
+      hint: "组织候选片段",
+      kind: "clip",
+    });
+  }
+
+  if (input.roleCounts.style_ref === 0 && input.imageCount > 0) {
+    actions.push({
+      id: "style",
+      label: "补风格锚点",
+      hint: "建立 style_ref",
+      kind: "style",
+    });
+  }
+
+  return actions.slice(0, 5);
 }
 
 export function ResourcePanel({
@@ -636,6 +756,32 @@ export function ResourcePanel({
     return resources.categories.reduce((sum, group) => sum + group.items.length, 0);
   }, [resources]);
 
+  const roleCounts = useMemo(() => countAtlasRoles(resources), [resources]);
+
+  const mediaCounts = useMemo(() => {
+    if (!resources) return { image: 0, video: 0, json: 0 };
+    return resources.categories.reduce(
+      (sum, group) => {
+        for (const item of group.items) {
+          if (item.mediaType === "image") sum.image += 1;
+          else if (item.mediaType === "video") sum.video += 1;
+          else if (item.mediaType === "json") sum.json += 1;
+        }
+        return sum;
+      },
+      { image: 0, video: 0, json: 0 },
+    );
+  }, [resources]);
+
+  const atlasQuickActions = useMemo(
+    () => buildAtlasQuickActions({
+      roleCounts,
+      imageCount: mediaCounts.image,
+      videoCount: mediaCounts.video,
+    }),
+    [mediaCounts.image, mediaCounts.video, roleCounts],
+  );
+
   const categoryKeys = useMemo(() => categories.map((g) => `cat-${g.category}`), [categories]);
   useEffect(() => {
     const newKeys = categoryKeys.filter((k) => !knownKeysRef.current.has(k));
@@ -746,6 +892,73 @@ export function ResourcePanel({
               ]}
             />
           </div>
+          <div className="asset-overview-grid mt-2 grid grid-cols-1 gap-2">
+            <div className="asset-overview-card">
+              <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--af-muted)]">Resource Mix</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <Tag style={{ margin: 0 }}>图片 {mediaCounts.image}</Tag>
+                <Tag style={{ margin: 0 }}>视频 {mediaCounts.video}</Tag>
+                <Tag style={{ margin: 0 }}>JSON {mediaCounts.json}</Tag>
+              </div>
+            </div>
+            <div className="asset-overview-card">
+              <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--af-muted)]">Semantic Roles</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {roleCounts.style_ref > 0 && <Tag color="gold" style={{ margin: 0 }}>画风 {roleCounts.style_ref}</Tag>}
+                {roleCounts.character_ref > 0 && <Tag color="blue" style={{ margin: 0 }}>角色 {roleCounts.character_ref}</Tag>}
+                {roleCounts.empty_shot_ref > 0 && <Tag color="cyan" style={{ margin: 0 }}>空镜 {roleCounts.empty_shot_ref}</Tag>}
+                {roleCounts.storyboard_ref > 0 && <Tag color="purple" style={{ margin: 0 }}>分镜 {roleCounts.storyboard_ref}</Tag>}
+                {roleCounts.first_frame_ref > 0 && <Tag color="gold" style={{ margin: 0 }}>首帧 {roleCounts.first_frame_ref}</Tag>}
+                {roleCounts.last_frame_ref > 0 && <Tag color="gold" style={{ margin: 0 }}>尾帧 {roleCounts.last_frame_ref}</Tag>}
+                {Object.values(roleCounts).every((value) => value === 0) && (
+                  <Tag style={{ margin: 0 }}>尚未建立语义锚点</Tag>
+                )}
+              </div>
+            </div>
+          </div>
+          {atlasQuickActions.length > 0 && (
+            <div className="mt-2">
+              <div className="mb-1 text-[10px] uppercase tracking-[0.16em] text-[var(--af-muted)]">Quick Routes</div>
+              <div className="grid grid-cols-1 gap-2">
+                {atlasQuickActions.map((action) => (
+                  <button
+                    key={action.id}
+                    type="button"
+                    className="director-action-button"
+                    onClick={() => {
+                      if (action.kind === "inject" && action.message && onInjectMessage) {
+                        onInjectMessage(action.message);
+                        void message.success("已把路线指令送入导演台。");
+                        return;
+                      }
+                      if (action.kind === "style") {
+                        onOpenStyleManager?.();
+                        return;
+                      }
+                      if (action.kind === "clip") {
+                        const candidate = resources?.categories
+                          .flatMap((group) => group.items)
+                          .find((item) => item.mediaType === "video" && item.url);
+                        if (candidate) {
+                          handleQueueClip(candidate);
+                        } else {
+                          void message.warning("还没有可送入粗剪的视频。");
+                        }
+                      }
+                    }}
+                    disabled={
+                      (action.kind === "inject" && (!onInjectMessage || !action.message))
+                      || (action.kind === "style" && !onOpenStyleManager)
+                      || (action.kind === "clip" && !onQueueClipResource)
+                    }
+                  >
+                    <span className="font-medium">{action.label}</span>
+                    <span className="text-[10px] text-[var(--af-muted)]">{action.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto p-2">
           {collapseItems.length === 0 ? (

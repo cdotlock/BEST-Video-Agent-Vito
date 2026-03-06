@@ -9,6 +9,8 @@ import {
   Drawer,
   Empty,
   Input,
+  Segmented,
+  Select,
   Space,
   Spin,
   Switch,
@@ -38,6 +40,20 @@ interface TemplatePreset {
   title: string;
   summary: string;
   content: string;
+}
+
+type StoryboardDensityPreset = "single" | "grid_2x2" | "grid_3x3";
+type ReferenceRoutePreset = "auto" | "first_frame" | "first_last_frame" | "mixed_refs";
+
+interface AtelierBlueprintState {
+  storyboardDensity: StoryboardDensityPreset;
+  referenceRoute: ReferenceRoutePreset;
+  characterPriority: boolean;
+  emptyShotPriority: boolean;
+  dialogueFirst: boolean;
+  multiClip: boolean;
+  checkpointAlignmentRequired: boolean;
+  enableSelfReview: boolean;
 }
 
 const TEMPLATE_PRESETS: TemplatePreset[] = [
@@ -77,6 +93,7 @@ function derivePathSignals(input: VideoProConfig): {
   wantsMultiClip: boolean;
   prefersCharacterPriority: boolean;
   prefersEmptyShotPriority: boolean;
+  needsDialogue: boolean;
 } {
   const merged = `${input.workflowTemplate}\n${input.customKnowledge}`.toLowerCase();
   let storyboardDensity: "single" | "grid_2x2" | "grid_3x3" | undefined;
@@ -98,7 +115,120 @@ function derivePathSignals(input: VideoProConfig): {
     wantsMultiClip: merged.includes("粗剪") || merged.includes("多候选") || merged.includes("拼接"),
     prefersCharacterPriority: merged.includes("立绘优先") || merged.includes("角色优先"),
     prefersEmptyShotPriority: merged.includes("空镜优先") || merged.includes("节奏空镜"),
+    needsDialogue: merged.includes("对白") || merged.includes("台词") || merged.includes("口播") || merged.includes("dialogue"),
   };
+}
+
+function buildAtelierBlueprintFromConfig(input: VideoProConfig): AtelierBlueprintState {
+  const signals = derivePathSignals(input);
+  let referenceRoute: ReferenceRoutePreset = "auto";
+  if (signals.hasFirstFrameReference && signals.hasLastFrameReference) {
+    referenceRoute = "first_last_frame";
+  } else if (signals.hasFirstFrameReference) {
+    referenceRoute = "first_frame";
+  } else if (signals.hasReferenceVideo) {
+    referenceRoute = "mixed_refs";
+  }
+
+  return {
+    storyboardDensity: signals.storyboardDensity ?? "grid_2x2",
+    referenceRoute,
+    characterPriority: signals.prefersCharacterPriority,
+    emptyShotPriority: signals.prefersEmptyShotPriority,
+    dialogueFirst: signals.needsDialogue,
+    multiClip: signals.wantsMultiClip,
+    checkpointAlignmentRequired: input.checkpointAlignmentRequired,
+    enableSelfReview: input.enableSelfReview,
+  };
+}
+
+function buildAtelierWorkflowText(input: AtelierBlueprintState): string {
+  const lines = ["按 Director Atelier 路线执行："];
+
+  if (input.storyboardDensity === "grid_3x3") {
+    lines.push("先做九宫格分镜探索，扩大镜头候选范围后再收敛。");
+  } else if (input.storyboardDensity === "grid_2x2") {
+    lines.push("先做四宫格分镜探索，快速比较镜头组合与节奏。");
+  } else {
+    lines.push("先做单张分镜确认，用更克制的方式锁定镜头。");
+  }
+
+  if (input.referenceRoute === "first_last_frame") {
+    lines.push("视频生成优先走首尾帧约束图生视频路线。");
+  } else if (input.referenceRoute === "first_frame") {
+    lines.push("视频生成优先走首帧图生视频路线。");
+  } else if (input.referenceRoute === "mixed_refs") {
+    lines.push("当图像与视频素材并存时，优先走 mixed refs 路线。");
+  } else {
+    lines.push("根据素材质量动态选择首帧、首尾帧或 mixed refs，不要死锁单一路径。");
+  }
+
+  if (input.characterPriority) {
+    lines.push("角色优先：先补 character_ref，稳定身份后再推进。");
+  }
+  if (input.emptyShotPriority) {
+    lines.push("空镜优先：先补 scene_ref 和 empty_shot_ref，让节奏和空间成立。");
+  }
+  if (input.dialogueFirst) {
+    lines.push("对白优先：先整理对白脚本，再让镜头围绕台词组织。");
+  }
+  if (input.multiClip) {
+    lines.push("保留多候选，最后进入粗剪与拼接，不要过早锁定单条成片。");
+  }
+  if (input.checkpointAlignmentRequired) {
+    lines.push("首轮先做 checkpoint 对齐，再进入关键生成。");
+  }
+  if (input.enableSelfReview) {
+    lines.push("关键阶段结束后必须 review，必要时切换路径或补素材。");
+  }
+
+  return lines.join("\n");
+}
+
+function buildAtelierKnowledgeText(input: AtelierBlueprintState): string {
+  const hints: string[] = [];
+
+  hints.push("把分镜密度当成探索杠杆，而不是固定流程。");
+  if (input.characterPriority) {
+    hints.push("当身份一致性比新鲜感更重要时，优先角色锚点。");
+  }
+  if (input.emptyShotPriority) {
+    hints.push("给作品预留空镜和呼吸镜头，不要只堆主体动作。");
+  }
+  if (input.dialogueFirst) {
+    hints.push("对白场景优先从台词节拍组织镜头。");
+  }
+  if (input.multiClip) {
+    hints.push("鼓励保留多个候选片段，交给剪辑阶段判断最优组合。");
+  }
+  if (input.referenceRoute === "mixed_refs") {
+    hints.push("灵活组合图片和视频参考，不要退回 prompt-only。");
+  }
+
+  return hints.join("\n");
+}
+
+function workflowSnippetForPath(pathId: string): string {
+  switch (pathId) {
+    case "path.storyboard_density.grid_3x3":
+      return "先用九宫格分镜做高密度探索，再挑出候选镜头进入后续生成。";
+    case "path.storyboard_density.grid_2x2":
+      return "先用四宫格分镜快速比较镜头方案，再决定后续方向。";
+    case "path.image_to_video.first_last_frame":
+      return "生成视频时优先使用首尾帧约束，稳定动作起止与结尾落点。";
+    case "path.image_to_video.first_frame":
+      return "生成视频时优先用首帧参考推进，必要时再补尾帧或 mixed refs。";
+    case "path.multi_reference_video":
+      return "当图像和视频参考并存时，优先 mixed refs 路线。";
+    case "path.role_pack.character_priority":
+      return "角色优先：先建立 character_ref，再补场景和动作。";
+    case "path.role_pack.empty_shot_priority":
+      return "空镜优先：先补 empty_shot_ref 和 scene_ref，让节奏和呼吸成立。";
+    case "path.multi_clip_compose":
+      return "保留多候选视频，最后进入粗剪与拼接。";
+    default:
+      return "先做风格和路径对齐，再进入具体生成。";
+  }
 }
 
 export function ProSettingsDrawer({
@@ -113,6 +243,7 @@ export function ProSettingsDrawer({
   const { message } = App.useApp();
   const [draftMemoryUser, setDraftMemoryUser] = useState(memoryUser);
   const [draftConfig, setDraftConfig] = useState<VideoProConfig>(config);
+  const [atelier, setAtelier] = useState<AtelierBlueprintState>(() => buildAtelierBlueprintFromConfig(config));
   const [isClearingMemory, setIsClearingMemory] = useState(false);
   const [memorySummary, setMemorySummary] = useState<MemoryRecommendations | null>(null);
   const [pathSummary, setPathSummary] = useState<WorkflowPathRecommendationsResult | null>(null);
@@ -123,6 +254,7 @@ export function ProSettingsDrawer({
     if (!open) return;
     setDraftMemoryUser(memoryUser);
     setDraftConfig(config);
+    setAtelier(buildAtelierBlueprintFromConfig(config));
   }, [config, memoryUser, open]);
 
   const pathSignals = useMemo(
@@ -248,6 +380,39 @@ export function ProSettingsDrawer({
     }));
   };
 
+  const applyAtelierTemplate = (mode: "replace" | "append") => {
+    const workflowText = buildAtelierWorkflowText(atelier);
+    setDraftConfig((prev) => ({
+      ...prev,
+      workflowTemplate: mode === "replace"
+        ? workflowText
+        : [prev.workflowTemplate.trim(), workflowText].filter((item) => item.length > 0).join("\n"),
+      checkpointAlignmentRequired: atelier.checkpointAlignmentRequired,
+      enableSelfReview: atelier.enableSelfReview,
+    }));
+    void message.success(mode === "replace" ? "Atelier 路线已写入模板" : "Atelier 路线已叠加到模板");
+  };
+
+  const applyAtelierKnowledge = () => {
+    const knowledgeText = buildAtelierKnowledgeText(atelier);
+    setDraftConfig((prev) => ({
+      ...prev,
+      customKnowledge: [prev.customKnowledge.trim(), knowledgeText].filter((item) => item.length > 0).join("\n"),
+      checkpointAlignmentRequired: atelier.checkpointAlignmentRequired,
+      enableSelfReview: atelier.enableSelfReview,
+    }));
+    void message.success("Atelier 知识已叠加到长期知识层");
+  };
+
+  const applyRecommendedPathSnippet = (pathId: string) => {
+    const snippet = workflowSnippetForPath(pathId);
+    setDraftConfig((prev) => ({
+      ...prev,
+      workflowTemplate: [prev.workflowTemplate.trim(), snippet].filter((item) => item.length > 0).join("\n"),
+    }));
+    void message.success("推荐路径已叠加到模板");
+  };
+
   return (
     <Drawer
       title="Pro 配置叠层"
@@ -324,6 +489,156 @@ export function ProSettingsDrawer({
                     </Card>
                   ))}
                 </div>
+              </div>
+            ),
+          },
+          {
+            key: "atelier",
+            label: "Atelier",
+            children: (
+              <div className="space-y-3">
+                <Alert
+                  showIcon
+                  type="success"
+                  title="Atelier 不是另一个大 prompt，而是把路径编排拆成几个可控的导演杠杆。"
+                />
+                <Card size="small" className="!rounded-[18px]">
+                  <Typography.Text strong>Storyboard Density</Typography.Text>
+                  <div className="mt-2">
+                    <Segmented<StoryboardDensityPreset>
+                      block
+                      value={atelier.storyboardDensity}
+                      onChange={(value) => setAtelier((prev) => ({ ...prev, storyboardDensity: value }))}
+                      options={[
+                        { label: "单张", value: "single" },
+                        { label: "四宫格", value: "grid_2x2" },
+                        { label: "九宫格", value: "grid_3x3" },
+                      ]}
+                    />
+                  </div>
+                </Card>
+
+                <Card size="small" className="!rounded-[18px]">
+                  <Typography.Text strong>Reference Route</Typography.Text>
+                  <Select<ReferenceRoutePreset>
+                    className="mt-2"
+                    value={atelier.referenceRoute}
+                    onChange={(value) => setAtelier((prev) => ({ ...prev, referenceRoute: value }))}
+                    options={[
+                      { value: "auto", label: "自动决策" },
+                      { value: "first_frame", label: "首帧图生视频" },
+                      { value: "first_last_frame", label: "首尾帧约束" },
+                      { value: "mixed_refs", label: "mixed refs" },
+                    ]}
+                  />
+                  <Typography.Paragraph style={{ marginTop: 10, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
+                    这里定义的是默认倾向，不是死规则。真正执行时仍允许 Agent 根据素材缺口做 review 和切路。
+                  </Typography.Paragraph>
+                </Card>
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <Card size="small" className="!rounded-[18px]">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <Typography.Text strong>角色优先</Typography.Text>
+                        <Switch
+                          checked={atelier.characterPriority}
+                          onChange={(checked) => setAtelier((prev) => ({ ...prev, characterPriority: checked }))}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <Typography.Text strong>空镜优先</Typography.Text>
+                        <Switch
+                          checked={atelier.emptyShotPriority}
+                          onChange={(checked) => setAtelier((prev) => ({ ...prev, emptyShotPriority: checked }))}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <Typography.Text strong>先对白</Typography.Text>
+                        <Switch
+                          checked={atelier.dialogueFirst}
+                          onChange={(checked) => setAtelier((prev) => ({ ...prev, dialogueFirst: checked }))}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <Typography.Text strong>多候选粗剪</Typography.Text>
+                        <Switch
+                          checked={atelier.multiClip}
+                          onChange={(checked) => setAtelier((prev) => ({ ...prev, multiClip: checked }))}
+                        />
+                      </div>
+                    </div>
+                  </Card>
+
+                  <Card size="small" className="!rounded-[18px]">
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <Typography.Text strong>Checkpoint 首轮对齐</Typography.Text>
+                        <Switch
+                          checked={atelier.checkpointAlignmentRequired}
+                          onChange={(checked) => setAtelier((prev) => ({ ...prev, checkpointAlignmentRequired: checked }))}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <Typography.Text strong>阶段性自评审</Typography.Text>
+                        <Switch
+                          checked={atelier.enableSelfReview}
+                          onChange={(checked) => setAtelier((prev) => ({ ...prev, enableSelfReview: checked }))}
+                        />
+                      </div>
+                    </div>
+                  </Card>
+                </div>
+
+                <Card size="small" className="!rounded-[18px]">
+                  <div className="flex items-center justify-between gap-3">
+                    <Typography.Text strong>Blueprint Preview</Typography.Text>
+                    <Space>
+                      <Button size="small" onClick={() => applyAtelierTemplate("append")}>
+                        叠加到模板
+                      </Button>
+                      <Button size="small" type="primary" onClick={() => applyAtelierTemplate("replace")}>
+                        覆盖模板
+                      </Button>
+                    </Space>
+                  </div>
+                  <pre className="mt-3 overflow-auto rounded-[16px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.78)] px-3 py-3 text-[11px] leading-relaxed text-[var(--af-text)]">
+                    {buildAtelierWorkflowText(atelier)}
+                  </pre>
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <Typography.Text style={{ fontSize: 12, color: "var(--af-muted)" }}>
+                      如果想把它变成长期偏好，而不是当前模板，可以写入知识层。
+                    </Typography.Text>
+                    <Button size="small" onClick={applyAtelierKnowledge}>
+                      叠加到知识
+                    </Button>
+                  </div>
+                </Card>
+
+                <Card size="small" className="!rounded-[18px]">
+                  <Typography.Text strong>根据当前信号推荐的路径</Typography.Text>
+                  {isLoadingPaths ? (
+                    <div className="flex items-center justify-center py-6"><Spin size="small" /></div>
+                  ) : !pathSummary || pathSummary.recommendations.length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无推荐路径" />
+                  ) : (
+                    <div className="mt-3 space-y-2">
+                      {pathSummary.recommendations.slice(0, 4).map((item) => (
+                        <div key={item.pathId} className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <Typography.Text strong>{item.title}</Typography.Text>
+                              <div className="mt-1 text-[12px] text-[var(--af-muted)]">{item.why.join("；")}</div>
+                            </div>
+                            <Button size="small" onClick={() => applyRecommendedPathSnippet(item.pathId)}>
+                              写入模板
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
               </div>
             ),
           },

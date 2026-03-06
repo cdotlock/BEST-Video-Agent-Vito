@@ -14,9 +14,12 @@ import {
   Typography,
 } from "antd";
 import {
+  BgColorsOutlined,
+  DeploymentUnitOutlined,
   DeleteOutlined,
   ReloadOutlined,
   RocketOutlined,
+  ScissorOutlined,
   VideoCameraOutlined,
 } from "@ant-design/icons";
 import { fetchJson, getErrorMessage } from "@/app/components/client-utils";
@@ -130,6 +133,10 @@ export default function VideoProjectHomePage() {
                 <Typography.Text style={{ fontSize: 12, color: "var(--af-muted)" }}>
                   一句话开始创作，Agent 自动规划并执行
                 </Typography.Text>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <Tag color="green" style={{ margin: 0 }}>Agent Native</Tag>
+                  <Tag color="gold" style={{ margin: 0 }}>Cream Ceramic Console</Tag>
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -156,39 +163,98 @@ export default function VideoProjectHomePage() {
             </div>
           )}
 
-          <section className="mx-auto max-w-4xl">
-            <Card className="ceramic-panel ceramic-panel--raised !border-transparent" styles={{ body: { padding: 24 } }}>
-              <Typography.Title level={3} style={{ marginTop: 0, marginBottom: 8, textAlign: "center", color: "var(--af-text)" }}>
-                你想创建什么视频？
-              </Typography.Title>
-              <Typography.Paragraph style={{ textAlign: "center", marginBottom: 16, color: "var(--af-muted)" }}>
-                直接说目标，系统会自动拆解工作流、匹配风格并开始创作。
-              </Typography.Paragraph>
+          <section className="mx-auto max-w-6xl">
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.85fr)]">
+              <Card className="ceramic-panel ceramic-panel--raised ceramic-hero-card !border-transparent" styles={{ body: { padding: 28 } }}>
+                <Typography.Text className="tracking-[0.26em]" style={{ fontSize: 11, color: "var(--af-accent)" }}>
+                  DIRECTOR CONSOLE
+                </Typography.Text>
+                <Typography.Title level={2} style={{ marginTop: 10, marginBottom: 10, color: "var(--af-text)" }}>
+                  把一句模糊想法，推进成一套会学习的导演型视频工作流。
+                </Typography.Title>
+                <Typography.Paragraph style={{ marginBottom: 18, fontSize: 14, color: "var(--af-muted)", maxWidth: 680 }}>
+                  它不是一键批量出片，而是把分镜、参考、路径、粗剪和记忆组织成可进化的 Agent Native 创作台。
+                </Typography.Paragraph>
 
-              <Input.TextArea
-                value={ideaInput}
-                onChange={(event) => setIdeaInput(event.target.value)}
-                placeholder="说一句你想创作的视频内容，例如：做一个治愈系咖啡品牌短片，镜头柔和，氛围温暖。"
-                autoSize={{ minRows: 4, maxRows: 8 }}
-                onPressEnter={(event) => {
-                  if (event.shiftKey) return;
-                  event.preventDefault();
-                  void handleCreateFromIdea();
-                }}
-                style={{ fontSize: 15 }}
-              />
-              <div className="mt-3 flex justify-center">
-                <Button
-                  type="primary"
-                  size="large"
-                  loading={isCreating}
-                  disabled={ideaInput.trim().length === 0}
-                  onClick={() => void handleCreateFromIdea()}
-                >
-                  开始创作
-                </Button>
+                <Input.TextArea
+                  value={ideaInput}
+                  onChange={(event) => setIdeaInput(event.target.value)}
+                  placeholder="说一句你想创作的视频内容，例如：做一个治愈系咖啡品牌短片，镜头柔和，氛围温暖。"
+                  autoSize={{ minRows: 5, maxRows: 9 }}
+                  onPressEnter={(event) => {
+                    if (event.shiftKey) return;
+                    event.preventDefault();
+                    void handleCreateFromIdea();
+                  }}
+                  style={{ fontSize: 15 }}
+                />
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <Tag style={{ margin: 0 }}>四宫格/九宫格分镜</Tag>
+                  <Tag style={{ margin: 0 }}>首帧/首尾帧视频</Tag>
+                  <Tag style={{ margin: 0 }}>mixed refs</Tag>
+                  <Tag style={{ margin: 0 }}>多候选粗剪</Tag>
+                  <Tag style={{ margin: 0 }}>主动记忆</Tag>
+                </div>
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <Button
+                    type="primary"
+                    size="large"
+                    loading={isCreating}
+                    disabled={ideaInput.trim().length === 0}
+                    onClick={() => void handleCreateFromIdea()}
+                  >
+                    开始创作
+                  </Button>
+                  <Typography.Text style={{ fontSize: 12, color: "var(--af-muted)" }}>
+                    默认会先建立导演路径，再进入真正执行。
+                  </Typography.Text>
+                </div>
+              </Card>
+
+              <div className="grid grid-cols-1 gap-4">
+                <Card className="ceramic-panel !border-transparent" styles={{ body: { padding: 20 } }}>
+                  <div className="flex items-start gap-3">
+                    <div className="director-mini-icon">
+                      <DeploymentUnitOutlined />
+                    </div>
+                    <div>
+                      <Typography.Text strong style={{ fontSize: 13 }}>灵活路径编排</Typography.Text>
+                      <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
+                        分镜、角色锚点、空镜、首尾帧、mixed refs、粗剪都能动态装配，不走单线脚本。
+                      </Typography.Paragraph>
+                    </div>
+                  </div>
+                </Card>
+
+                <Card className="ceramic-panel !border-transparent" styles={{ body: { padding: 20 } }}>
+                  <div className="flex items-start gap-3">
+                    <div className="director-mini-icon">
+                      <BgColorsOutlined />
+                    </div>
+                    <div>
+                      <Typography.Text strong style={{ fontSize: 13 }}>审美与记忆进化</Typography.Text>
+                      <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
+                        它会把你的风格、路径偏好、镜头习惯和粗剪反馈写回长期记忆，而不是每次重新开始。
+                      </Typography.Paragraph>
+                    </div>
+                  </div>
+                </Card>
+
+                <Card className="ceramic-panel !border-transparent" styles={{ body: { padding: 20 } }}>
+                  <div className="flex items-start gap-3">
+                    <div className="director-mini-icon">
+                      <ScissorOutlined />
+                    </div>
+                    <div>
+                      <Typography.Text strong style={{ fontSize: 13 }}>高上限 Clip Studio</Typography.Text>
+                      <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
+                        先生成多个候选，再在剪辑台里收束节奏，而不是把“生成完成”误当成“作品完成”。
+                      </Typography.Paragraph>
+                    </div>
+                  </div>
+                </Card>
               </div>
-            </Card>
+            </div>
           </section>
 
           <section className="mx-auto mt-6 max-w-6xl">

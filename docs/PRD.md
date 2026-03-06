@@ -208,6 +208,12 @@ Review 结论要么：
 
 不要求用户直接碰代码或 JSON 协议。
 
+当前实现约定：
+
+1. 项目页主舞台顶部新增 `Director Console`，显式展示运行态、路径轨道、素材语义与快速编排动作
+2. `Pro` 新增 `Atelier` 层，把分镜密度、参考路线、角色/空镜/对白/粗剪策略转成导演蓝图
+3. `Capabilities + Director Console + Atelier` 三层共同承担“高上限但不暴露源码”的交互边界
+
 ## 5.7 资产系统
 
 右侧资产区不仅展示文件，更是结构化上下文图谱。
@@ -224,6 +230,12 @@ Review 结论要么：
    - 来源工具、来源任务、来源 prompt
 5. `relations`
    - 与其他资源的关联，例如“该视频引用了哪些分镜和立绘”
+
+当前实现约定：
+
+1. Asset Atlas 顶部会先归纳 `Resource Mix + Semantic Roles + Quick Routes`
+2. `Quick Routes` 只封装高价值导演动作，例如补四宫格、首尾帧、补空镜、进入粗剪
+3. 资源语义仍以 `semanticRole` 写回资源数据，保持可 recall 与可复用
 6. `usage`
    - 被注入上下文次数、被设为风格参考次数、被加入粗剪次数
 
