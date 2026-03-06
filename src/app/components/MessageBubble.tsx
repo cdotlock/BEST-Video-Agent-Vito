@@ -9,6 +9,8 @@ import {
 } from "@ant-design/icons";
 import type { ChatMessage, ToolCall } from "../types";
 import { parseJsonObject } from "./client-utils";
+import { MarkdownContent } from "./MarkdownContent";
+import { StructuredMessageContent } from "./StructuredMessageContent";
 
 /* ---- Helpers ---- */
 
@@ -44,10 +46,10 @@ const roleConfig: Record<
   ChatMessage["role"],
   { label: string; color: string; icon: React.ReactNode; tone: string }
 > = {
-  user: { label: "User", color: "default", icon: <UserOutlined />, tone: "border-slate-200 bg-white" },
-  assistant: { label: "Assistant", color: "green", icon: <RobotOutlined />, tone: "border-emerald-200 bg-emerald-50/70" },
-  system: { label: "System", color: "orange", icon: <SettingOutlined />, tone: "border-amber-200 bg-amber-50/70" },
-  tool: { label: "Tool", color: "blue", icon: <ToolOutlined />, tone: "border-sky-200 bg-sky-50/70" },
+  user: { label: "User", color: "default", icon: <UserOutlined />, tone: "border-[var(--af-border)] bg-[rgba(255,253,249,0.92)]" },
+  assistant: { label: "Director Agent", color: "green", icon: <RobotOutlined />, tone: "border-[rgba(47,107,95,0.18)] bg-[rgba(255,255,255,0.72)]" },
+  system: { label: "System", color: "orange", icon: <SettingOutlined />, tone: "border-[rgba(201,139,91,0.18)] bg-[rgba(255,247,240,0.9)]" },
+  tool: { label: "Tool", color: "blue", icon: <ToolOutlined />, tone: "border-[rgba(141,167,194,0.28)] bg-[rgba(245,249,252,0.92)]" },
 };
 
 /* ---- Component ---- */
@@ -58,24 +60,29 @@ export interface MessageBubbleProps {
 
 export function MessageBubble({ message }: MessageBubbleProps) {
   const cfg = roleConfig[message.role];
+  const content = message.content ? stripMemoryLines(message.content) : "";
+
   return (
-    <div className={`rounded border px-3 py-2 ${cfg.tone}`}>
-      <div className="mb-1">
+    <div className={`director-bubble rounded-[26px] border px-4 py-3 shadow-[0_16px_34px_rgba(110,97,84,0.08)] ${cfg.tone}`}>
+      <div className="mb-2">
         <Tag color={cfg.color} icon={cfg.icon} style={{ fontSize: 10 }}>
           {cfg.label}
         </Tag>
       </div>
-      {message.content && stripMemoryLines(message.content) ? (
-        <Typography.Paragraph
-          style={{ marginBottom: 0, fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap" }}
-        >
-          {stripMemoryLines(message.content)}
-        </Typography.Paragraph>
+      {content ? (
+        message.role === "assistant" ? (
+          <StructuredMessageContent content={content} />
+        ) : (
+          <MarkdownContent
+            content={content}
+            className="text-[13px] leading-7 text-[var(--af-text)]"
+          />
+        )
       ) : (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>No content</Typography.Text>
       )}
       {message.images && message.images.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
+        <div className="mt-3 flex flex-wrap gap-2">
           <Image.PreviewGroup>
             {message.images.map((url, i) => (
               <Image
@@ -83,14 +90,14 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 src={url}
                 alt={`Image ${i + 1}`}
                 height={96}
-                style={{ maxWidth: 160, objectFit: "cover", borderRadius: 4 }}
+                style={{ maxWidth: 160, objectFit: "cover", borderRadius: 16 }}
               />
             ))}
           </Image.PreviewGroup>
         </div>
       )}
       {message.role === "assistant" && message.tool_calls && message.tool_calls.length > 0 && (
-        <div className="mt-2 rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-600">
+        <div className="mt-3 rounded-[18px] border border-[var(--af-border)] bg-[rgba(255,253,249,0.8)] px-3 py-2 text-[10px] text-[var(--af-muted)]">
           {summarizeToolCalls(message.tool_calls)}
         </div>
       )}

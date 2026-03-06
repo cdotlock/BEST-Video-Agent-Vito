@@ -44,6 +44,11 @@ export interface DomainResources {
   categories: CategoryGroup[];
 }
 
+export interface QueuedClipResource {
+  token: string;
+  resource: DomainResource;
+}
+
 export interface VideoResourceData {
   key?: string;
   prompt?: string;
@@ -57,6 +62,13 @@ export interface VideoContext {
 
 export type ExecutionMode = "checkpoint" | "yolo";
 export type WorkspaceView = "chat" | "clip";
+
+export interface VideoProConfig {
+  customKnowledge: string;
+  workflowTemplate: string;
+  checkpointAlignmentRequired: boolean;
+  enableSelfReview: boolean;
+}
 
 export interface VideoTimelineEvent {
   id: string;
@@ -144,7 +156,11 @@ export interface MemoryRecommendations {
   enabled: true;
   preferredStyleTokens: string[];
   preferredWorkflowPaths: string[];
+  rejectedWorkflowPaths: string[];
   preferredProviders: PublicImageProvider[];
+  preferredEditingHints: string[];
+  preferredCameraHints: string[];
+  preferredModelIds: string[];
   positivePromptHint: string | null;
   negativePromptHint: string | null;
   queryHint: string | null;

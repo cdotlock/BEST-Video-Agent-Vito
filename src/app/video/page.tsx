@@ -117,16 +117,17 @@ export default function VideoProjectHomePage() {
 
   return (
     <ConfigProvider theme={videoWorkspaceTheme}>
-      <main className="flex h-screen w-full flex-col bg-[#f5f7fa] text-slate-900">
-        <header className="border-b border-slate-200 bg-white px-6 py-4">
+      <main className="ceramic-page flex h-screen w-full flex-col text-[var(--af-text)]">
+        <div className="px-4 pt-4">
+          <header className="ceramic-topbar px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <VideoCameraOutlined style={{ fontSize: 20, color: "#2563eb" }} />
+              <VideoCameraOutlined style={{ fontSize: 20, color: "var(--af-brand)" }} />
               <div>
-                <Typography.Title level={4} style={{ margin: 0 }}>
+                <Typography.Title level={4} style={{ margin: 0, color: "var(--af-text)" }}>
                   BEST Video Agent
                 </Typography.Title>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                <Typography.Text style={{ fontSize: 12, color: "var(--af-muted)" }}>
                   一句话开始创作，Agent 自动规划并执行
                 </Typography.Text>
               </div>
@@ -145,22 +146,23 @@ export default function VideoProjectHomePage() {
               </Button>
             </div>
           </div>
-        </header>
+          </header>
+        </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-8">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-6">
           {error && (
-            <div className="mx-auto mb-4 max-w-4xl rounded border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+            <div className="mx-auto mb-4 max-w-4xl rounded-[22px] border border-[rgba(198,90,75,0.24)] bg-[rgba(255,245,244,0.9)] px-4 py-2 text-sm text-[#a04438]">
               {error}
             </div>
           )}
 
           <section className="mx-auto max-w-4xl">
-            <Card className="!border-slate-200 !shadow-sm" styles={{ body: { padding: 20 } }}>
-              <Typography.Title level={3} style={{ marginTop: 0, marginBottom: 8, textAlign: "center" }}>
+            <Card className="ceramic-panel ceramic-panel--raised !border-transparent" styles={{ body: { padding: 24 } }}>
+              <Typography.Title level={3} style={{ marginTop: 0, marginBottom: 8, textAlign: "center", color: "var(--af-text)" }}>
                 你想创建什么视频？
               </Typography.Title>
-              <Typography.Paragraph type="secondary" style={{ textAlign: "center", marginBottom: 16 }}>
-                直接说目标，系统会自动生成计划、匹配风格并开始创作。
+              <Typography.Paragraph style={{ textAlign: "center", marginBottom: 16, color: "var(--af-muted)" }}>
+                直接说目标，系统会自动拆解工作流、匹配风格并开始创作。
               </Typography.Paragraph>
 
               <Input.TextArea
@@ -191,7 +193,7 @@ export default function VideoProjectHomePage() {
 
           <section className="mx-auto mt-6 max-w-6xl">
             <div className="mb-3 flex items-center justify-between">
-              <Typography.Title level={5} style={{ margin: 0 }}>已创建故事</Typography.Title>
+              <Typography.Title level={5} style={{ margin: 0, color: "var(--af-text)" }}>已创建故事</Typography.Title>
               <Input
                 allowClear
                 placeholder="搜索故事"
@@ -206,7 +208,7 @@ export default function VideoProjectHomePage() {
                 <Spin size="large" />
               </div>
             ) : filteredProjects.length === 0 ? (
-              <Card>
+              <Card className="ceramic-panel !border-transparent">
                 <Empty
                   description={projects.length === 0 ? "还没有故事，先输入一句话开始创作。" : "没有匹配的故事"}
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -218,11 +220,11 @@ export default function VideoProjectHomePage() {
                   <Card
                     key={project.id}
                     size="small"
-                    className="!border-slate-200"
+                    className="ceramic-panel !border-transparent"
                     title={(
                       <div className="flex min-w-0 items-center gap-2">
                         <span className="truncate">{project.name}</span>
-                        <Tag color="blue" style={{ margin: 0 }}>
+                        <Tag color="green" style={{ margin: 0 }}>
                           {new Date(project.updatedAt).toLocaleDateString()}
                         </Tag>
                       </div>

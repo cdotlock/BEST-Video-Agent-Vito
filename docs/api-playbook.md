@@ -111,8 +111,8 @@ curl -X POST http://localhost:8001/api/tasks/{task_id}/cancel
 
 `POST /api/video/tasks` 支持 `execution_mode`：
 
-- `checkpoint`（默认）— agent 在高成本/不可逆动作前应进行简短确认
-- `yolo` — agent 自动推进流程，不做中间确认阻塞
+- `checkpoint`（默认）— 审慎推进偏好（上下文注入）
+- `yolo` — 自动推进偏好（上下文注入）
 
 请求示例：
 ```
@@ -128,10 +128,48 @@ curl -X POST http://localhost:8001/api/video/tasks \
 ```
 
 **因果**：
-- `execution_mode` 会注入 agent runtime 配置，直接影响确认策略；同一接口不传时默认 `checkpoint`
+- `execution_mode` 写入 `VideoContextProvider`，作为偏好上下文，不触发前端硬编码确认流程
+- 当 `execution_mode=checkpoint` 且 `pro_config.checkpointAlignmentRequired=true` 时，首轮会先进行画风/工作流/分镜对齐，再进入生成
 - `memory_user` 默认开启长期记忆，并在上下文中注入历史风格偏好
-- `/api/video/tasks` 会强制产品模式白名单（MCP: `video_mgr/style_search/video_memory` + core；skills tag: `video-core`），低频运维能力不在默认产品路径暴露
+- `/api/video/tasks` 会使用受控白名单（核心视频 MCP + `mcp_manager/subagent` + 受控 skills），支持在 Chat 中进行工作流客制化
 - 未配置 `LLM_API_KEY` 时该接口返回 `503`，避免创建必然失败的异步任务
+
+`POST /api/video/tasks` 还支持可选 `pro_config`：
+
+- `customKnowledge`
+- `workflowTemplate`
+- `checkpointAlignmentRequired`
+- `enableSelfReview`
+
+**因果**：Pro 抽屉配置会作为隐藏上下文注入，影响路径选择与执行策略。
+
+当前前端落地约定：
+
+- Pro 抽屉固定分为 `Knowledge / Templates / Memory / Review / Capabilities`
+- `Memory` tab 会读取 `/api/video/memory/recommendations` 与 `/api/video/memory/path-recommendations`
+- `Capabilities` 仅展示已绑定的 MCP / Skill 叠层，不直接暴露源码编辑
+
+### Chat 上下文挂载（@素材与风格参考）
+
+`POST /api/video/tasks` 额外支持：
+
+- `context_resource_ids: string[]`：用户通过 `@该素材` 挂载的上下文资源 ID（仅注入上下文，不自动发指令）
+- `style_reference_resource_ids: string[]`：用户选定的风格参考图资源 ID（隐式注入生图参考）
+
+**因果**：
+- 这两类字段只影响系统上下文注入，不会额外生成一条用户消息；
+- 风格参考会在内部提示中约束 `video_mgr__generate_image` 合并 `referenceImageUrls/references(role=style_ref)`；
+- 该隐式机制不向终端用户文案暴露。
+
+### 默认会话回填（按 project+sequence）
+
+前端在选定 sequence 后，会以 `user=video:{projectId}:{sequenceKey}` 调用：
+
+1. `GET /api/sessions?user=...` 获取会话列表（按 `updatedAt desc`）
+2. 若存在历史会话，默认加载第一条（最近会话）
+3. 用户点击“新会话”后，当前 sequence 下不再自动回填旧会话，直到切换 sequence 或刷新页面
+
+**因果**：保持“默认接续上下文”与“手动开新线程”并存，避免误回到旧对话。
 
 ### Project → Sequence → Task（通用视频链路）
 
@@ -193,10 +231,65 @@ curl -X POST http://localhost:8001/api/video/tasks \
    - 输入 `layout=grid_2x2|grid_3x3` + cell prompts
    - 生成 cell 图片并持久化网格计划 JSON
 2. `POST /api/video/sequences/{sequenceId}/clip-plan`：
-   - 输入片段列表（顺序/in/out/transition）
-   - 保存 clip plan 到 `domain_resources`（mediaType=json）
+   - 最简输入：片段列表（顺序/in/out/transition）
+   - 扩展输入：`saveMode=manual|autosave` + `editorState`
+   - 保存 `timeline_v2` clip plan 到 `domain_resources`（mediaType=json）
 
-**因果**：网格分镜和 clip plan 均是持久化中间资产，可在后续会话继续复用，不依赖上下文记忆。
+`editorState` 当前包含：
+
+- `selectedClipId / selectedSourceResourceId`
+- `sourceInSec / sourceOutSec / sourceDurationSec`
+- `previewMode=source|program`
+- `timelineZoom / snapEnabled / snapStepSec`
+
+**因果**：网格分镜和 clip plan 均是持久化中间资产；Clip Studio 依赖 `timeline_v2 + editorState` 完成自动保存、跨会话恢复与手工继续编辑。
+
+### Asset Atlas 语义动作
+
+右侧 Asset Atlas 的快捷动作不是纯前端局部状态：
+
+1. `设为首帧 / 设为尾帧 / 角色锚点 / 空镜锚点`
+   - 前端调用 `PATCH /api/video/sequences/{sequenceId}/resources`
+   - 将 `domain_resources.data.semanticRole` 更新为对应角色
+2. 下次 `POST /api/video/tasks`
+   - `VideoContextProvider -> Prompt Compiler` 会重新读取资源语义
+   - `workflow_graph / task_intent / hidden_ops` 自动抬高对应路径
+3. `加入粗剪`
+   - 先在前端把资源送入 Clip Studio 时间线
+   - 只有保存 clip plan 后，才会持久化为新的 `clip_plan` 资产
+
+**因果**：首帧/尾帧/角色/空镜这些选择是可 recall 的资源语义，而不是会在长对话里丢失的瞬时消息。
+
+### Clip Studio 主动记忆写回
+
+当用户在 Clip Studio 里手动保存时：
+
+1. `POST /api/video/sequences/{sequenceId}/clip-plan`
+   - 持久化 `timeline_v2 + editorState`
+2. 前端 best-effort 追加：
+   - `POST /api/video/memory/path-review`
+   - `POST /api/video/memory/feedback`
+3. 写回内容至少包含：
+   - `path.multi_clip_compose`
+   - `editingHints`
+   - `cameraHints`
+   - `modelIds`
+
+**因果**：高级用户的粗剪行为会反过来影响后续路径推荐和 Prompt Compiler 的 `user_memory` 组装。
+
+### 台词脚本资产
+
+MCP `video_mgr` 新增 `video_mgr__save_dialogue_script`：
+
+- 输入：结构化台词条目（角色、台词、情绪、时长建议）
+- 输出：`domain_resources` 中 `mediaType=json`、`data.type=dialogue_script` 的持久化资源
+
+`video_mgr__generate_video` 同时支持可选 `dialogueContext` 字段：
+
+- tool 内部会把该字段合并到 runtime prompt（`hidden_dialogue_context=...`）
+- 用户可见 prompt 保持创作描述层，不暴露隐藏注入细节
+
+**因果**：后续视频任务上下文会自动吸收台词资源；在需要口播/唇形时可稳定把台词语义并入生成提示词。
 
 ### 参考角色化（图/视频混合参考）
 
@@ -208,24 +301,43 @@ curl -X POST http://localhost:8001/api/video/tasks \
    - 兼容字段：`referenceImageUrls[] + referenceVideoUrls[]`
    - 角色化字段：`references[]`（含 `mediaType=image|video`）
 3. 服务端会合并并去重参考链接，将快照写入 `domain_resources.data`，用于后续 review/复用。
+4. `video_mgr` 各落库工具支持 scope 自动推断：若缺失 `scopeType/scopeId`，会根据 `user=video:{projectId}:{sequenceKey}` 自动回填当前 sequence scope；若误传 `scopeId=sequenceKey`，会自动纠正为真实 `sequenceId`。
 
 **因果**：同一条生成记录既保留历史兼容字段，也保留角色语义；后续 agent 可基于角色语义重组 prompt，而不是把参考素材混为一类。
+
+### domain_resources.data 结构升级（v2 envelope）
+
+从 2026-03 起，`domain_resources.data` 统一写入版本化 envelope：
+
+- `__af_resource_data_v=2`
+- `encoding=utf-8`
+- `payloadType`
+- `payload`
+
+读取链路兼容旧数据：
+
+1. 若为 envelope，自动解包 `payload`
+2. 若为历史双重 JSON 字符串，自动最多 3 层解包
+
+**因果**：减少素材 JSON 乱码/转义串显示问题，并保证存储结构可演进。
 
 ### 长期记忆（默认开启）
 
 1. `GET /api/video/memory/recommendations?memoryUser=...`：
    - 返回长期偏好推荐（style tokens / providers / prompt hints）
+   - 同时返回 `preferredEditingHints / preferredCameraHints / preferredModelIds / rejectedWorkflowPaths`
 2. `POST /api/video/memory/optimize-prompt`：
    - 输入 `memoryUser + prompt (+ mode)`
    - 用长期记忆自动优化 prompt，并默认记录 `prompt_optimized` 事件
 3. `GET /api/video/memory/path-recommendations`：
-   - 输入 `memoryUser` + 可选目标信息（goal/storyboardDensity/hasReferenceVideo/wantsMultiClip）
+   - 输入 `memoryUser` + 可选目标信息（`goal/storyboardDensity/hasImageReference/hasReferenceVideo/hasFirstFrameReference/hasLastFrameReference/wantsMultiClip/prefersCharacterPriority/prefersEmptyShotPriority`）
    - 返回 Top 路径推荐与原因
 4. `POST /api/video/memory/path-review`：
    - 输入 `pathId + score`
    - 记录路径评审并写回长期记忆（`workflow_path_review`）
 5. `POST /api/video/memory/feedback`：
    - 写入偏好事件（`style_profile_saved` / `style_profile_applied` / `generation_feedback` / `manual_feedback` / `prompt_optimized` / `workflow_path_review`）
+   - 可附带 `rejectedWorkflowPaths / editingHints / cameraHints / modelIds`
 6. `DELETE /api/video/memory`：
    - 按 `memoryUser` 清空长期记忆
 

@@ -25,7 +25,12 @@ import type {
   UploadRequestPayload,
 } from "@/app/types";
 import { useTaskStream } from "@/app/components/hooks/useTaskStream";
-import type { VideoContext, ExecutionMode, VideoTimelineEvent } from "../types";
+import type {
+  VideoContext,
+  ExecutionMode,
+  VideoTimelineEvent,
+  VideoProConfig,
+} from "../types";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -45,6 +50,14 @@ interface SubmitVideoTaskRequest {
   preload_mcps: string[];
   skills: string[];
   execution_mode: ExecutionMode;
+  context_resource_ids?: string[];
+  style_reference_resource_ids?: string[];
+  pro_config?: {
+    customKnowledge?: string;
+    workflowTemplate?: string;
+    checkpointAlignmentRequired?: boolean;
+    enableSelfReview?: boolean;
+  };
   session_id?: string;
   images?: string[];
   model?: string;
@@ -92,11 +105,39 @@ export function useVideoChat(
   autoMessage?: string,
   model?: string,
   memoryUser?: string,
+  contextResourceIds?: string[],
+  styleReferenceResourceIds?: string[],
+  proConfig?: VideoProConfig,
 ): UseVideoChatReturn {
   const [activeTool, setActiveTool] = useState<ActiveToolInfo | null>(null);
   const [timelineEvents, setTimelineEvents] = useState<VideoTimelineEvent[]>([]);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onRefreshNeededRef = useRef(onRefreshNeeded);
+  const checkpointPrimerPendingRef = useRef(
+    executionMode === "checkpoint" && !initialSessionId,
+  );
+
+  const checkpointAlignmentRequired = proConfig?.checkpointAlignmentRequired ?? true;
+
+  const buildCheckpointPrimerPrompt = useCallback((userText: string, hasImages: boolean): string => {
+    const origin = userText.trim().length > 0 ? userText.trim() : "(仅图片输入)";
+    return [
+      "你现在处于 checkpoint 模式，先做创作前对齐，再执行。",
+      "本轮必须先完成中间确认：",
+      "1) 画风偏好（默认内置风格或用户指定风格）",
+      "2) 理想工作流路径（例如：单图分镜/四宫格/九宫格、首帧/首尾帧、是否混合图视频参考）",
+      "3) 故事分镜与关键镜头拆解（至少 3-5 个镜头）",
+      "输出格式要求：",
+      "- 使用 `### alignment_block` 提出关键对齐项与推荐默认值。",
+      "- 使用 `### plan_block` 说明建议路径、关键产物和确认后下一步。",
+      "要求：",
+      "- 本轮不要调用任何生成工具。",
+      "- 先用简洁问题与建议选项让用户确认或修改。",
+      "- 用户确认后再开始执行。",
+      `用户原始需求：${origin}`,
+      hasImages ? "用户附带了参考图片，请把图片也纳入对齐问题。" : "用户暂未附加参考图。",
+    ].join("\n");
+  }, []);
 
   const appendTimelineEvent = useCallback((event: Omit<VideoTimelineEvent, "id" | "at">) => {
     const row: VideoTimelineEvent = {
@@ -165,6 +206,17 @@ export function useVideoChat(
     },
   });
 
+  useEffect(() => {
+    if (executionMode !== "checkpoint") return;
+    if (initialSessionId) {
+      checkpointPrimerPendingRef.current = false;
+      return;
+    }
+    if (stream.messages.length === 0) {
+      checkpointPrimerPendingRef.current = true;
+    }
+  }, [executionMode, initialSessionId, stream.messages.length]);
+
   /* ---- Auto-send on mount ---- */
   const autoFiredRef = useRef(false);
 
@@ -191,7 +243,11 @@ export function useVideoChat(
     } catch { /* best effort */ }
   }, []);
 
-  const submitText = useCallback(async (text: string, images?: string[]) => {
+  const submitText = useCallback(async (
+    text: string,
+    images?: string[],
+    options?: { bypassCheckpointPrimer?: boolean },
+  ) => {
     if ((!text && !images?.length) || stream.isSending) return;
     const effectiveContext = videoContext ?? (ensureVideoContext ? await ensureVideoContext() : null);
     if (!effectiveContext) {
@@ -217,8 +273,19 @@ export function useVideoChat(
     stream.setMessages((prev) => [...prev, userMsg]);
 
     try {
+      const shouldInjectCheckpointPrimer = executionMode === "checkpoint"
+        && checkpointAlignmentRequired
+        && checkpointPrimerPendingRef.current
+        && options?.bypassCheckpointPrimer !== true;
+      if (shouldInjectCheckpointPrimer) {
+        checkpointPrimerPendingRef.current = false;
+      }
+      const effectiveMessage = shouldInjectCheckpointPrimer
+        ? buildCheckpointPrimerPrompt(text, Boolean(images?.length))
+        : (text || "(image)");
+
       const payload: SubmitVideoTaskRequest = {
-        message: text || "(image)",
+        message: effectiveMessage,
         user: effectiveUser,
         memory_user: memoryUser ?? "default",
         video_context: effectiveContext,
@@ -226,9 +293,25 @@ export function useVideoChat(
         skills,
         execution_mode: executionMode,
       };
+      const dedupedContextResources = [...new Set((contextResourceIds ?? []).filter((id) => id.trim().length > 0))];
+      if (dedupedContextResources.length > 0) {
+        payload.context_resource_ids = dedupedContextResources;
+      }
+      const dedupedStyleRefs = [...new Set((styleReferenceResourceIds ?? []).filter((id) => id.trim().length > 0))];
+      if (dedupedStyleRefs.length > 0) {
+        payload.style_reference_resource_ids = dedupedStyleRefs;
+      }
       if (sid) payload.session_id = sid;
       if (images?.length) payload.images = images;
       if (model) payload.model = model;
+      if (proConfig) {
+        payload.pro_config = {
+          customKnowledge: proConfig.customKnowledge,
+          workflowTemplate: proConfig.workflowTemplate,
+          checkpointAlignmentRequired: proConfig.checkpointAlignmentRequired,
+          enableSelfReview: proConfig.enableSelfReview,
+        };
+      }
 
       const result = await fetchJson<{ task_id: string; session_id: string }>(
         "/api/video/tasks",
@@ -257,7 +340,23 @@ export function useVideoChat(
       stream.setStatus("error");
       stream.markSendFinished();
     }
-  }, [appendTimelineEvent, ensureVideoContext, executionMode, generateTitle, memoryUser, model, preloadMcps, skills, stream, videoContext]);
+  }, [
+    appendTimelineEvent,
+    contextResourceIds,
+    ensureVideoContext,
+    executionMode,
+    checkpointAlignmentRequired,
+    buildCheckpointPrimerPrompt,
+    generateTitle,
+    memoryUser,
+    model,
+    preloadMcps,
+    proConfig,
+    skills,
+    stream,
+    styleReferenceResourceIds,
+    videoContext,
+  ]);
 
   const sendMessage = useCallback(async (images?: string[]) => {
     const text = stream.input.trim();
@@ -266,7 +365,7 @@ export function useVideoChat(
   }, [stream.input, submitText]);
 
   const sendDirect = useCallback(async (text: string) => {
-    await submitText(text.trim());
+    await submitText(text.trim(), undefined, { bypassCheckpointPrimer: true });
   }, [submitText]);
 
   /* ---- stopStreaming (extends base with activeTool cleanup) ---- */

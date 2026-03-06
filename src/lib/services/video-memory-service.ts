@@ -25,6 +25,8 @@ export const WorkflowPathIdSchema = z.enum([
   "path.image_to_video.first_frame",
   "path.image_to_video.first_last_frame",
   "path.multi_reference_video",
+  "path.role_pack.character_priority",
+  "path.role_pack.empty_shot_priority",
   "path.multi_clip_compose",
 ]);
 export type WorkflowPathId = z.infer<typeof WorkflowPathIdSchema>;
@@ -36,7 +38,11 @@ export interface PreferenceFeedbackInput {
   eventType: PreferenceEventType;
   styleTokens: string[];
   workflowPaths: WorkflowPathId[];
+  rejectedWorkflowPaths: WorkflowPathId[];
   providers: MemoryProvider[];
+  editingHints: string[];
+  cameraHints: string[];
+  modelIds: string[];
   positivePrompt: string | null;
   negativePrompt: string | null;
   query: string | null;
@@ -49,7 +55,11 @@ export interface MemoryRecommendations {
   enabled: true;
   preferredStyleTokens: string[];
   preferredWorkflowPaths: WorkflowPathId[];
+  rejectedWorkflowPaths: WorkflowPathId[];
   preferredProviders: MemoryProvider[];
+  preferredEditingHints: string[];
+  preferredCameraHints: string[];
+  preferredModelIds: string[];
   positivePromptHint: string | null;
   negativePromptHint: string | null;
   queryHint: string | null;
@@ -69,7 +79,12 @@ export interface RecommendWorkflowPathsInput {
   goal: string | null;
   storyboardDensity: "single" | "grid_2x2" | "grid_3x3" | null;
   hasReferenceVideo: boolean;
+  hasImageReference?: boolean;
+  hasFirstFrameReference?: boolean;
+  hasLastFrameReference?: boolean;
   wantsMultiClip: boolean;
+  prefersCharacterPriority?: boolean;
+  prefersEmptyShotPriority?: boolean;
 }
 
 export interface RecommendWorkflowPathsResult {
@@ -199,6 +214,22 @@ const WORKFLOW_PATH_CATALOG: Record<
       "生成视频候选",
     ],
   },
+  "path.role_pack.character_priority": {
+    title: "角色立绘优先",
+    steps: [
+      "先建立 character_ref 与身份稳定锚点",
+      "再补 scene_ref / motion_ref / storyboard_ref",
+      "最后生成视频候选",
+    ],
+  },
+  "path.role_pack.empty_shot_priority": {
+    title: "空镜节奏优先",
+    steps: [
+      "先补 empty_shot_ref 与 scene_ref",
+      "以 establishing / transition shot 组织节奏",
+      "再加入主镜头与角色镜头",
+    ],
+  },
   "path.multi_clip_compose": {
     title: "多段视频拼接",
     steps: [
@@ -261,13 +292,38 @@ export async function recordPreferenceFeedback(input: PreferenceFeedbackInput): 
         WorkflowPathIdSchema.safeParse(pathId).success,
       ),
   );
+  const rejectedWorkflowPaths = dedupeList(
+    input.rejectedWorkflowPaths
+      .filter((pathId): pathId is WorkflowPathId =>
+        WorkflowPathIdSchema.safeParse(pathId).success,
+      ),
+  );
 
   const providers = dedupeList(input.providers);
+  const editingHints = dedupeList(
+    input.editingHints
+      .map((hint) => hint.trim())
+      .filter((hint) => hint.length > 0),
+  );
+  const cameraHints = dedupeList(
+    input.cameraHints
+      .map((hint) => hint.trim())
+      .filter((hint) => hint.length > 0),
+  );
+  const modelIds = dedupeList(
+    input.modelIds
+      .map((modelId) => modelId.trim())
+      .filter((modelId) => modelId.length > 0),
+  );
 
   const payload = {
     styleTokens,
     workflowPaths,
+    rejectedWorkflowPaths,
     providers,
+    editingHints,
+    cameraHints,
+    modelIds,
     positivePrompt: input.positivePrompt,
     negativePrompt: input.negativePrompt,
     query: input.query,
@@ -303,6 +359,17 @@ export async function recordPreferenceFeedback(input: PreferenceFeedbackInput): 
     );
   }
 
+  for (const pathId of rejectedWorkflowPaths) {
+    await upsertPreference(
+      prefsTable,
+      memoryUser,
+      "rejected_workflow_path",
+      pathId,
+      Math.max(0.4, Math.abs(strength)),
+      input.eventType,
+    );
+  }
+
   for (const provider of providers) {
     await upsertPreference(
       prefsTable,
@@ -310,6 +377,39 @@ export async function recordPreferenceFeedback(input: PreferenceFeedbackInput): 
       "provider",
       provider,
       strength * 0.8,
+      input.eventType,
+    );
+  }
+
+  for (const hint of editingHints) {
+    await upsertPreference(
+      prefsTable,
+      memoryUser,
+      "editing_hint",
+      hint,
+      strength * 0.7,
+      input.eventType,
+    );
+  }
+
+  for (const hint of cameraHints) {
+    await upsertPreference(
+      prefsTable,
+      memoryUser,
+      "camera_hint",
+      hint,
+      strength * 0.7,
+      input.eventType,
+    );
+  }
+
+  for (const modelId of modelIds) {
+    await upsertPreference(
+      prefsTable,
+      memoryUser,
+      "model_id",
+      modelId,
+      strength * 0.75,
       input.eventType,
     );
   }
@@ -376,7 +476,11 @@ export async function getMemoryRecommendations(
 
   const styleTokenRows = parsedRows.filter((row) => row.pref_key === "style_token");
   const workflowPathRows = parsedRows.filter((row) => row.pref_key === "workflow_path");
+  const rejectedWorkflowPathRows = parsedRows.filter((row) => row.pref_key === "rejected_workflow_path");
   const providerRows = parsedRows.filter((row) => row.pref_key === "provider");
+  const editingHintRows = parsedRows.filter((row) => row.pref_key === "editing_hint");
+  const cameraHintRows = parsedRows.filter((row) => row.pref_key === "camera_hint");
+  const modelIdRows = parsedRows.filter((row) => row.pref_key === "model_id");
   const positiveRows = parsedRows.filter((row) => row.pref_key === "positive_prompt");
   const negativeRows = parsedRows.filter((row) => row.pref_key === "negative_prompt");
   const queryRows = parsedRows.filter((row) => row.pref_key === "query_hint");
@@ -395,6 +499,14 @@ export async function getMemoryRecommendations(
         (value): value is WorkflowPathId => WorkflowPathIdSchema.safeParse(value).success,
       ),
   ).slice(0, 6);
+  const rejectedWorkflowPaths = dedupeList(
+    rejectedWorkflowPathRows
+      .sort((a, b) => toNumber(b.weight) - toNumber(a.weight))
+      .map((row) => row.pref_value)
+      .filter(
+        (value): value is WorkflowPathId => WorkflowPathIdSchema.safeParse(value).success,
+      ),
+  ).slice(0, 6);
 
   const preferredProviders = dedupeList(
     providerRows
@@ -402,6 +514,21 @@ export async function getMemoryRecommendations(
       .map((row) => row.pref_value)
       .filter((value): value is MemoryProvider => MemoryProviderSchema.safeParse(value).success),
   ).slice(0, 3);
+  const preferredEditingHints = dedupeList(
+    editingHintRows
+      .sort((a, b) => toNumber(b.weight) - toNumber(a.weight))
+      .map((row) => row.pref_value),
+  ).slice(0, 6);
+  const preferredCameraHints = dedupeList(
+    cameraHintRows
+      .sort((a, b) => toNumber(b.weight) - toNumber(a.weight))
+      .map((row) => row.pref_value),
+  ).slice(0, 6);
+  const preferredModelIds = dedupeList(
+    modelIdRows
+      .sort((a, b) => toNumber(b.weight) - toNumber(a.weight))
+      .map((row) => row.pref_value),
+  ).slice(0, 4);
 
   const bestPositive = positiveRows[0]?.pref_value ?? null;
   const bestNegative = negativeRows[0]?.pref_value ?? null;
@@ -412,7 +539,11 @@ export async function getMemoryRecommendations(
     enabled: true,
     preferredStyleTokens,
     preferredWorkflowPaths,
+    rejectedWorkflowPaths,
     preferredProviders,
+    preferredEditingHints,
+    preferredCameraHints,
+    preferredModelIds,
     positivePromptHint: bestPositive,
     negativePromptHint: bestNegative,
     queryHint: bestQuery,
@@ -442,6 +573,18 @@ export async function optimizePromptWithMemory(
     lines.push(`推荐流程路径: ${recommendations.preferredWorkflowPaths.slice(0, 3).join(", ")}`);
     appliedHints.push("workflow_path");
   }
+  if (recommendations.preferredEditingHints.length > 0) {
+    lines.push(`剪辑偏好: ${recommendations.preferredEditingHints.slice(0, 3).join(", ")}`);
+    appliedHints.push("editing_hint");
+  }
+  if (recommendations.preferredCameraHints.length > 0) {
+    lines.push(`镜头语言: ${recommendations.preferredCameraHints.slice(0, 3).join(", ")}`);
+    appliedHints.push("camera_hint");
+  }
+  if (recommendations.preferredModelIds.length > 0) {
+    lines.push(`模型偏好: ${recommendations.preferredModelIds.slice(0, 2).join(", ")}`);
+    appliedHints.push("model_id");
+  }
 
   if (hasText(recommendations.positivePromptHint)) {
     lines.push(`正向约束: ${recommendations.positivePromptHint.trim()}`);
@@ -468,7 +611,11 @@ export async function optimizePromptWithMemory(
       eventType: "prompt_optimized",
       styleTokens: recommendations.preferredStyleTokens,
       workflowPaths: recommendations.preferredWorkflowPaths,
+      rejectedWorkflowPaths: recommendations.rejectedWorkflowPaths,
       providers: recommendations.preferredProviders,
+      editingHints: recommendations.preferredEditingHints,
+      cameraHints: recommendations.preferredCameraHints,
+      modelIds: recommendations.preferredModelIds,
       positivePrompt: recommendations.positivePromptHint,
       negativePrompt: recommendations.negativePromptHint,
       query: recommendations.queryHint,
@@ -494,6 +641,11 @@ export async function recommendWorkflowPaths(
   const memoryUser = normalizeMemoryUser(input.memoryUser);
   const memory = await getMemoryRecommendations(memoryUser);
   const goal = (input.goal ?? "").toLowerCase();
+  const hasImageReference = input.hasImageReference ?? false;
+  const hasFirstFrameReference = input.hasFirstFrameReference ?? false;
+  const hasLastFrameReference = input.hasLastFrameReference ?? false;
+  const prefersCharacterPriority = input.prefersCharacterPriority ?? false;
+  const prefersEmptyShotPriority = input.prefersEmptyShotPriority ?? false;
 
   const candidates: WorkflowPathRecommendation[] = (
     Object.keys(WORKFLOW_PATH_CATALOG) as WorkflowPathId[]
@@ -507,6 +659,10 @@ export async function recommendWorkflowPaths(
       const memoryBoost = Math.max(0.2, 0.8 - memoryRank * 0.12);
       score += memoryBoost;
       why.push("匹配历史偏好路径");
+    }
+    if (memory.rejectedWorkflowPaths.includes(pathId)) {
+      score -= 0.75;
+      why.push("历史上曾被拒绝或降权");
     }
 
     if (input.storyboardDensity === "grid_2x2" && pathId === "path.storyboard_density.grid_2x2") {
@@ -526,10 +682,35 @@ export async function recommendWorkflowPaths(
       score += 1;
       why.push("存在视频参考素材");
     }
+    if (hasImageReference && pathId === "path.image_to_video.first_frame") {
+      score += 0.8;
+      why.push("已有图像参考，可直接首帧驱动");
+    }
+    if (hasImageReference && input.hasReferenceVideo && pathId === "path.multi_reference_video") {
+      score += 1.1;
+      why.push("图像与视频参考可走 mixed refs");
+    }
+    if (hasFirstFrameReference && pathId === "path.image_to_video.first_frame") {
+      score += 1;
+      why.push("已有首帧参考");
+    }
+    if (hasFirstFrameReference && hasLastFrameReference
+      && pathId === "path.image_to_video.first_last_frame") {
+      score += 1.4;
+      why.push("已具备首尾帧约束");
+    }
 
     if (input.wantsMultiClip && pathId === "path.multi_clip_compose") {
       score += 1.1;
       why.push("目标包含多段拼接");
+    }
+    if (prefersCharacterPriority && pathId === "path.role_pack.character_priority") {
+      score += 1.1;
+      why.push("当前更适合先稳定角色立绘");
+    }
+    if (prefersEmptyShotPriority && pathId === "path.role_pack.empty_shot_priority") {
+      score += 1.1;
+      why.push("当前更适合先搭建空镜与节奏");
     }
 
     if (hasKeyword(goal, "首尾帧", "first_last", "first last")
@@ -552,6 +733,16 @@ export async function recommendWorkflowPaths(
       score += 1;
       why.push("目标强调混合参考");
     }
+    if (hasKeyword(goal, "角色", "立绘", "portrait", "character priority")
+      && pathId === "path.role_pack.character_priority") {
+      score += 1;
+      why.push("目标强调角色稳定与立绘优先");
+    }
+    if (hasKeyword(goal, "空镜", "氛围", "establishing", "mood shot", "atmosphere")
+      && pathId === "path.role_pack.empty_shot_priority") {
+      score += 1;
+      why.push("目标强调空镜、氛围或节奏镜头");
+    }
     if (hasKeyword(goal, "风格", "style", "画风")
       && pathId === "path.style_bootstrap") {
       score += 0.9;
@@ -561,7 +752,7 @@ export async function recommendWorkflowPaths(
     return {
       pathId,
       title: meta.title,
-      score: Number(score.toFixed(3)),
+      score: Number(Math.max(0.05, score).toFixed(3)),
       why: why.length > 0 ? why : ["通用推荐路径"],
       steps: meta.steps,
     };
@@ -592,7 +783,11 @@ export async function recordWorkflowPathReview(input: {
     eventType: "workflow_path_review",
     styleTokens: [],
     workflowPaths: [input.pathId],
+    rejectedWorkflowPaths: [],
     providers: [],
+    editingHints: [],
+    cameraHints: [],
+    modelIds: [],
     positivePrompt: null,
     negativePrompt: null,
     query: null,

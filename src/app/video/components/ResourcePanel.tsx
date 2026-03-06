@@ -9,8 +9,8 @@ import {
   Empty,
   Grid,
   Input,
-  Select,
   Spin,
+  Tabs,
   Tag,
   Typography,
 } from "antd";
@@ -20,11 +20,15 @@ import {
   EditOutlined,
   ExpandOutlined,
   LinkOutlined,
+  ScissorOutlined,
   SyncOutlined,
+  VerticalAlignBottomOutlined,
+  VerticalAlignTopOutlined,
 } from "@ant-design/icons";
 import { z } from "zod";
 import type { DomainResources, DomainResource } from "../types";
 import { fetchJson } from "@/app/components/client-utils";
+import { inferReferenceRole, type VideoReferenceRole } from "@/lib/video/reference-roles";
 
 export interface ResourcePanelProps {
   resources: DomainResources | null;
@@ -32,6 +36,10 @@ export interface ResourcePanelProps {
   sequenceId: string | null;
   onRefresh?: () => void;
   onInjectMessage?: (message: string) => void;
+  onAttachContextResource?: (resource: DomainResource) => void;
+  onAttachStyleReference?: (resource: DomainResource) => void;
+  onQueueClipResource?: (resource: DomainResource) => void;
+  onOpenStyleManager?: () => void;
   embedded?: boolean;
 }
 
@@ -43,6 +51,11 @@ const ResourceDataSchema = z.object({
   key: z.string().optional(),
 }).passthrough();
 
+const ResourceDataEnvelopeSchema = z.object({
+  __af_resource_data_v: z.literal(2),
+  payload: z.unknown(),
+}).passthrough();
+
 const KeyResourceDetailSchema = z.object({
   id: z.string().min(1),
   prompt: z.string().nullable().optional(),
@@ -50,14 +63,92 @@ const KeyResourceDetailSchema = z.object({
 });
 
 function buildAsideClass(embedded: boolean): string {
-  if (embedded) return "flex h-full w-full flex-col bg-white";
-  return "flex h-full w-72 min-w-[240px] shrink-0 flex-col border-l border-slate-200 bg-white";
+  if (embedded) return "ceramic-panel ceramic-resource-panel flex h-full w-full flex-col";
+  return "ceramic-panel ceramic-resource-panel flex h-full w-72 min-w-[240px] shrink-0 flex-col";
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getReferenceRoleLabel(resource: DomainResource): string | null {
+  const role = inferReferenceRole({
+    category: resource.category,
+    mediaType: resource.mediaType,
+    title: resource.title,
+    data: resource.data,
+  });
+  if (!role) return null;
+  switch (role) {
+    case "style_ref":
+      return "画风参考";
+    case "scene_ref":
+      return "场景";
+    case "empty_shot_ref":
+      return "空镜";
+    case "character_ref":
+      return "角色";
+    case "motion_ref":
+      return "动作";
+    case "first_frame_ref":
+      return "首帧";
+    case "last_frame_ref":
+      return "尾帧";
+    case "storyboard_ref":
+      return "分镜";
+    case "dialogue_ref":
+      return "对白";
+    default:
+      return null;
+  }
+}
+
+function isResourceMediaFilter(value: string): value is ResourceMediaFilter {
+  return value === "all" || value === "image" || value === "video" || value === "json";
+}
+
+function looksLikeJsonDocument(input: string): boolean {
+  const trimmed = input.trim();
+  if (trimmed.length < 2) return false;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) return true;
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) return true;
+  if (trimmed.startsWith("\"{") && trimmed.endsWith("}\"")) return true;
+  if (trimmed.startsWith("\"[") && trimmed.endsWith("]\"")) return true;
+  return false;
+}
+
+function normalizeResourceData(raw: unknown): unknown {
+  let current: unknown = raw;
+  const envelope = ResourceDataEnvelopeSchema.safeParse(current);
+  if (envelope.success) {
+    current = envelope.data.payload;
+  }
+
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof current !== "string") break;
+    if (!looksLikeJsonDocument(current)) break;
+    try {
+      const parsed: unknown = JSON.parse(current);
+      if (parsed === current) break;
+      current = parsed;
+    } catch {
+      break;
+    }
+  }
+  return current;
 }
 
 function readResourceData(resource: DomainResource): z.infer<typeof ResourceDataSchema> | null {
-  const parsed = ResourceDataSchema.safeParse(resource.data);
+  const parsed = ResourceDataSchema.safeParse(normalizeResourceData(resource.data));
   if (!parsed.success) return null;
   return parsed.data;
+}
+
+function stringifyResourceData(resource: DomainResource): string {
+  const normalized = normalizeResourceData(resource.data);
+  if (typeof normalized === "string") return normalized;
+  if (normalized == null) return "";
+  return JSON.stringify(normalized, null, 2);
 }
 
 function sanitizePromptForPlayer(rawPrompt: string | null): string {
@@ -73,6 +164,7 @@ function sanitizePromptForPlayer(rawPrompt: string | null): string {
     "sequence_key:",
     "resource_id=",
     "reference_image_url=",
+    "hidden_dialogue_context=",
     "scopeType=",
     "scopeId=",
   ];
@@ -102,32 +194,9 @@ function buildSearchText(resource: DomainResource): string {
   const parts: string[] = [resource.category, resource.title ?? ""];
   const prompt = readResourcePrompt(resource);
   if (prompt) parts.push(prompt);
-  if (typeof resource.data === "string") parts.push(resource.data);
+  const normalized = normalizeResourceData(resource.data);
+  if (typeof normalized === "string") parts.push(normalized);
   return parts.join(" ").toLowerCase();
-}
-
-function buildAtMaterialInstruction(resource: DomainResource): string {
-  const prompt = readResourcePrompt(resource);
-  return [
-    "@该素材",
-    "请将该素材加入当前对话上下文，并基于它继续执行当前计划。",
-    `resource_id=${resource.id}`,
-    `resource_title=${resource.title ?? "untitled"}`,
-    `resource_media_type=${resource.mediaType}`,
-    prompt ? `creative_prompt=${prompt}` : null,
-  ].filter((line): line is string => line !== null).join("\n");
-}
-
-function buildStyleRefInstruction(resource: DomainResource): string {
-  const prompt = readResourcePrompt(resource);
-  return [
-    "请将该图片设为新的风格参考并继续生成。",
-    "注意：底层参考图角色映射与参数注入由系统内部处理，无需向用户展示。",
-    `resource_id=${resource.id}`,
-    `resource_title=${resource.title ?? "untitled"}`,
-    `reference_image_url=${resource.url ?? ""}`,
-    prompt ? `creative_prompt=${prompt}` : null,
-  ].filter((line): line is string => line !== null).join("\n");
 }
 
 function buildRerollInstruction(resource: DomainResource, prompt: string): string {
@@ -140,12 +209,54 @@ function buildRerollInstruction(resource: DomainResource, prompt: string): strin
   ].join("\n");
 }
 
+function buildSemanticRolePayload(resource: DomainResource, role: VideoReferenceRole): unknown {
+  const normalized = normalizeResourceData(resource.data);
+  if (isPlainObject(normalized)) {
+    return {
+      ...normalized,
+      semanticRole: role,
+    };
+  }
+  return {
+    semanticRole: role,
+    preservedData: normalized,
+  };
+}
+
+function semanticRoleActionLabel(role: VideoReferenceRole): string {
+  switch (role) {
+    case "first_frame_ref":
+      return "首帧参考";
+    case "last_frame_ref":
+      return "尾帧参考";
+    case "character_ref":
+      return "角色锚点";
+    case "empty_shot_ref":
+      return "空镜锚点";
+    default:
+      return getReferenceRoleLabel({
+        id: "",
+        category: "",
+        mediaType: "json",
+        title: role,
+        url: null,
+        data: { semanticRole: role },
+        keyResourceId: null,
+        sortOrder: 0,
+      }) ?? role;
+  }
+}
+
 export function ResourcePanel({
   resources,
   isLoading,
   sequenceId,
   onRefresh,
   onInjectMessage,
+  onAttachContextResource,
+  onAttachStyleReference,
+  onQueueClipResource,
+  onOpenStyleManager,
   embedded = false,
 }: ResourcePanelProps) {
   const ASIDE_CLASS = buildAsideClass(embedded);
@@ -242,17 +353,27 @@ export function ResourcePanel({
 
   const openEditor = useCallback((item: { id: string; title: string; data: unknown }) => {
     setEditingItem(item);
-    setEditText(item.data != null ? JSON.stringify(item.data, null, 2) : "");
+    if (item.data == null) {
+      setEditText("");
+      return;
+    }
+    if (typeof item.data === "string") {
+      setEditText(item.data);
+      return;
+    }
+    setEditText(JSON.stringify(item.data, null, 2));
   }, []);
 
   const handleSave = useCallback(async () => {
     if (!editingItem || !sequenceId) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(editText);
-    } catch {
-      void message.error("JSON 格式不合法");
-      return;
+    let parsed: unknown = null;
+    const trimmed = editText.trim();
+    if (trimmed.length > 0) {
+      try {
+        parsed = JSON.parse(editText);
+      } catch {
+        parsed = editText;
+      }
     }
     setIsSaving(true);
     try {
@@ -272,26 +393,64 @@ export function ResourcePanel({
   }, [editText, editingItem, message, onRefresh, sequenceId]);
 
   const handleAtMaterial = useCallback((resource: DomainResource) => {
-    if (!onInjectMessage) {
-      void message.warning("当前页面无法注入对话。");
+    if (!onAttachContextResource) {
+      void message.warning("当前页面无法附加上下文。");
       return;
     }
-    onInjectMessage(buildAtMaterialInstruction(resource));
-    void message.success("已注入 @该素材 上下文。");
-  }, [message, onInjectMessage]);
+    onAttachContextResource(resource);
+    void message.success("已加入 @上下文，将在下一轮请求生效。");
+  }, [message, onAttachContextResource]);
 
   const handleSetStyleRef = useCallback((resource: DomainResource) => {
-    if (!onInjectMessage) {
-      void message.warning("当前页面无法注入对话。");
+    if (!onAttachStyleReference) {
+      void message.warning("当前页面无法设置风格参考。");
       return;
     }
     if (resource.mediaType !== "image" || !resource.url) {
       void message.warning("仅图片素材支持设为新风格。");
       return;
     }
-    onInjectMessage(buildStyleRefInstruction(resource));
-    void message.success("已设为新风格并注入对话。");
-  }, [message, onInjectMessage]);
+    onAttachStyleReference(resource);
+    void message.success("已加入风格参考，将在后续生图隐式注入。");
+  }, [message, onAttachStyleReference]);
+
+  const handleAssignSemanticRole = useCallback(async (
+    resource: DomainResource,
+    role: VideoReferenceRole,
+  ) => {
+    if (!sequenceId) {
+      void message.warning("请先创建或选择工作区。");
+      return;
+    }
+
+    try {
+      await fetchJson(`/api/video/sequences/${encodeURIComponent(sequenceId)}/resources`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resourceId: resource.id,
+          data: buildSemanticRolePayload(resource, role),
+        }),
+      });
+      void message.success(`已设为${semanticRoleActionLabel(role)}。`);
+      onRefresh?.();
+    } catch {
+      void message.error("设置素材语义失败。");
+    }
+  }, [message, onRefresh, sequenceId]);
+
+  const handleQueueClip = useCallback((resource: DomainResource) => {
+    if (!onQueueClipResource) {
+      void message.warning("当前页面无法直接送入剪辑台。");
+      return;
+    }
+    if (resource.mediaType !== "video" || !resource.url) {
+      void message.warning("仅已生成的视频素材可以加入粗剪。");
+      return;
+    }
+    onQueueClipResource(resource);
+    void message.success("已送入剪辑台。");
+  }, [message, onQueueClipResource]);
 
   const handleRerollFromDetail = useCallback(async () => {
     if (!selectedResource) return;
@@ -355,7 +514,7 @@ export function ResourcePanel({
   const renderImageItem = (resource: DomainResource) => (
     <div
       key={resource.id}
-      className="group/card relative w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-left"
+      className="group/card relative w-full overflow-hidden rounded-[18px] border border-[var(--af-border)] bg-[rgba(255,255,255,0.82)] text-left"
       onClick={() => openDetail(resource)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -375,9 +534,16 @@ export function ResourcePanel({
           暂无图片
         </div>
       )}
-      <div className="flex items-center justify-between gap-1 border-t border-slate-100 px-2 py-1.5">
-        <div className="truncate text-[11px] font-medium text-slate-700">{resource.title ?? "图片素材"}</div>
-        <Tag style={{ margin: 0, fontSize: 10 }}>image</Tag>
+      <div className="flex items-center justify-between gap-1 border-t border-[rgba(229,221,210,0.7)] px-2 py-1.5">
+        <div className="truncate text-[11px] font-medium text-[var(--af-text)]">{resource.title ?? "图片素材"}</div>
+        <div className="flex items-center gap-1">
+          {getReferenceRoleLabel(resource) ? (
+            <Tag color="gold" style={{ margin: 0, fontSize: 10 }}>
+              {getReferenceRoleLabel(resource)}
+            </Tag>
+          ) : null}
+          <Tag style={{ margin: 0, fontSize: 10 }}>image</Tag>
+        </div>
       </div>
     </div>
   );
@@ -385,7 +551,7 @@ export function ResourcePanel({
   const renderVideoItem = (resource: DomainResource) => (
     <div
       key={resource.id}
-      className="group/card relative w-full overflow-hidden rounded-lg border border-slate-200 bg-white text-left"
+      className="group/card relative w-full overflow-hidden rounded-[18px] border border-[var(--af-border)] bg-[rgba(255,255,255,0.82)] text-left"
       onClick={() => openDetail(resource)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -404,23 +570,28 @@ export function ResourcePanel({
           待生成视频
         </div>
       )}
-      <div className="flex items-center justify-between gap-1 border-t border-slate-100 px-2 py-1.5">
-        <div className="truncate text-[11px] font-medium text-slate-700">{resource.title ?? "视频素材"}</div>
-        <Tag style={{ margin: 0, fontSize: 10 }}>video</Tag>
+      <div className="flex items-center justify-between gap-1 border-t border-[rgba(229,221,210,0.7)] px-2 py-1.5">
+        <div className="truncate text-[11px] font-medium text-[var(--af-text)]">{resource.title ?? "视频素材"}</div>
+        <div className="flex items-center gap-1">
+          {getReferenceRoleLabel(resource) ? (
+            <Tag color="blue" style={{ margin: 0, fontSize: 10 }}>
+              {getReferenceRoleLabel(resource)}
+            </Tag>
+          ) : null}
+          <Tag style={{ margin: 0, fontSize: 10 }}>video</Tag>
+        </div>
       </div>
     </div>
   );
 
   const renderJsonItem = (resource: DomainResource) => {
-    const text = resource.data != null
-      ? (typeof resource.data === "string" ? resource.data : JSON.stringify(resource.data, null, 2))
-      : "";
+    const text = stringifyResourceData(resource);
 
     return (
       <div
         key={resource.id}
-        className="group/card relative cursor-pointer overflow-hidden rounded-lg border border-slate-200 bg-white"
-        onClick={() => openEditor({ id: resource.id, title: resource.title ?? "JSON", data: resource.data })}
+        className="group/card relative cursor-pointer overflow-hidden rounded-[18px] border border-[var(--af-border)] bg-[rgba(255,255,255,0.82)]"
+        onClick={() => openEditor({ id: resource.id, title: resource.title ?? "JSON", data: normalizeResourceData(resource.data) })}
         title="点击编辑"
       >
         {renderDeleteBtn(resource.id)}
@@ -428,9 +599,16 @@ export function ResourcePanel({
           {text}
         </pre>
         <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-white via-white/80 to-transparent px-2 pb-1.5 pt-6">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div className="truncate text-[11px] font-medium text-slate-900">{resource.title ?? "JSON"}</div>
-            <EditOutlined className="text-[11px] text-slate-500" />
+            <div className="flex items-center gap-1">
+              {getReferenceRoleLabel(resource) ? (
+                <Tag color="cyan" style={{ margin: 0, fontSize: 10 }}>
+                  {getReferenceRoleLabel(resource)}
+                </Tag>
+              ) : null}
+              <EditOutlined className="text-[11px] text-slate-500" />
+            </div>
           </div>
         </div>
       </div>
@@ -502,7 +680,7 @@ export function ResourcePanel({
     return (
       <aside className={ASIDE_CLASS}>
         <div className="flex flex-1 items-center justify-center px-3 text-center text-xs text-slate-500">
-          先在对话里说一句你想创作的内容，Agent 会自动给计划并开始执行。
+          先在对话里说一句你想创作的内容，Agent 会自动规划并开始执行。
         </div>
       </aside>
     );
@@ -523,8 +701,19 @@ export function ResourcePanel({
       <aside className={ASIDE_CLASS}>
         <div className="border-b border-slate-200 px-3 py-2">
           <div className="mb-2 flex items-center justify-between">
-            <Typography.Text strong style={{ fontSize: 12 }}>素材面板</Typography.Text>
+            <div className="leading-tight">
+              <Typography.Text strong style={{ fontSize: 12 }}>Asset Atlas</Typography.Text>
+              <div className="text-[10px] text-[var(--af-muted)]">角色化素材图谱</div>
+            </div>
             <div className="flex items-center gap-1">
+              <Button
+                size="small"
+                icon={<BgColorsOutlined />}
+                onClick={() => onOpenStyleManager?.()}
+                disabled={!onOpenStyleManager}
+              >
+                风格管理
+              </Button>
               <Button
                 size="small"
                 icon={<ExpandOutlined />}
@@ -541,15 +730,19 @@ export function ResourcePanel({
               onChange={(event) => setSearchText(event.target.value)}
               allowClear
             />
-            <Select<ResourceMediaFilter>
+            <Tabs
               size="small"
-              value={mediaFilter}
-              onChange={setMediaFilter}
-              options={[
-                { value: "all", label: "全部媒体" },
-                { value: "image", label: "图片" },
-                { value: "video", label: "视频" },
-                { value: "json", label: "JSON" },
+              activeKey={mediaFilter}
+              onChange={(value) => {
+                if (isResourceMediaFilter(value)) {
+                  setMediaFilter(value);
+                }
+              }}
+              items={[
+                { key: "all", label: "全部" },
+                { key: "image", label: "图片" },
+                { key: "video", label: "视频" },
+                { key: "json", label: "JSON" },
               ]}
             />
           </div>
@@ -582,8 +775,8 @@ export function ResourcePanel({
       </aside>
 
       <Drawer
-        title="素材浏览（展开）"
-        width={screens.lg ? 1080 : "100%"}
+        title="Asset Atlas"
+        size={screens.lg ? 1080 : "100%"}
         open={expandedOpen}
         onClose={() => setExpandedOpen(false)}
       >
@@ -619,7 +812,7 @@ export function ResourcePanel({
                           )}
                           {isJson && (
                             <pre className="max-h-40 overflow-hidden whitespace-pre-wrap break-all px-2 py-2 text-[10px] leading-relaxed text-slate-600">
-                              {typeof resource.data === "string" ? resource.data : JSON.stringify(resource.data, null, 2)}
+                              {stringifyResourceData(resource)}
                             </pre>
                           )}
                           {!resource.url && (isImage || isVideo) && (
@@ -642,6 +835,33 @@ export function ResourcePanel({
                             >
                               @该素材
                             </Button>
+                            {(isImage || isVideo) && (
+                              <Button
+                                size="small"
+                                icon={<VerticalAlignTopOutlined />}
+                                onClick={() => void handleAssignSemanticRole(resource, "first_frame_ref")}
+                              >
+                                首帧
+                              </Button>
+                            )}
+                            {(isImage || isVideo) && (
+                              <Button
+                                size="small"
+                                icon={<VerticalAlignBottomOutlined />}
+                                onClick={() => void handleAssignSemanticRole(resource, "last_frame_ref")}
+                              >
+                                尾帧
+                              </Button>
+                            )}
+                            {isVideo && resource.url && (
+                              <Button
+                                size="small"
+                                icon={<ScissorOutlined />}
+                                onClick={() => handleQueueClip(resource)}
+                              >
+                                加入粗剪
+                              </Button>
+                            )}
                             {isImage && resource.url && (
                               <Button
                                 size="small"
@@ -671,8 +891,8 @@ export function ResourcePanel({
       </Drawer>
 
       <Drawer
-        title={selectedResource ? (selectedResource.title ?? "素材详情") : "素材详情"}
-        width={screens.lg ? 980 : "100%"}
+        title={selectedResource ? (selectedResource.title ?? "Asset Inspector") : "Asset Inspector"}
+        size={screens.lg ? 980 : "100%"}
         open={selectedResource !== null}
         onClose={() => setSelectedResource(null)}
         destroyOnClose
@@ -702,7 +922,7 @@ export function ResourcePanel({
                   )
                 ) : (
                   <pre className="h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-50 p-2 text-[10px] leading-relaxed text-slate-600">
-                    {typeof selectedResource.data === "string" ? selectedResource.data : JSON.stringify(selectedResource.data, null, 2)}
+                    {stringifyResourceData(selectedResource)}
                   </pre>
                 )}
               </div>
@@ -722,6 +942,37 @@ export function ResourcePanel({
                   <Button type="primary" icon={<LinkOutlined />} onClick={() => handleAtMaterial(selectedResource)}>
                     @该素材
                   </Button>
+                  {(selectedResource.mediaType === "image" || selectedResource.mediaType === "video") && (
+                    <Button
+                      icon={<VerticalAlignTopOutlined />}
+                      onClick={() => void handleAssignSemanticRole(selectedResource, "first_frame_ref")}
+                    >
+                      设为首帧
+                    </Button>
+                  )}
+                  {(selectedResource.mediaType === "image" || selectedResource.mediaType === "video") && (
+                    <Button
+                      icon={<VerticalAlignBottomOutlined />}
+                      onClick={() => void handleAssignSemanticRole(selectedResource, "last_frame_ref")}
+                    >
+                      设为尾帧
+                    </Button>
+                  )}
+                  {selectedResource.mediaType === "image" && (
+                    <Button onClick={() => void handleAssignSemanticRole(selectedResource, "character_ref")}>
+                      角色锚点
+                    </Button>
+                  )}
+                  {(selectedResource.mediaType === "image" || selectedResource.mediaType === "video") && (
+                    <Button onClick={() => void handleAssignSemanticRole(selectedResource, "empty_shot_ref")}>
+                      空镜锚点
+                    </Button>
+                  )}
+                  {selectedResource.mediaType === "video" && selectedResource.url && (
+                    <Button icon={<ScissorOutlined />} onClick={() => handleQueueClip(selectedResource)}>
+                      加入粗剪
+                    </Button>
+                  )}
                   {selectedResource.mediaType === "image" && selectedResource.url && (
                     <Button icon={<BgColorsOutlined />} onClick={() => handleSetStyleRef(selectedResource)}>
                       设为新风格

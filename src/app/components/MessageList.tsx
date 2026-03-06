@@ -5,6 +5,7 @@ import { Alert, Empty, Spin, Tag, Typography } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import type { ChatMessage } from "../types";
 import { MessageBubble, stripMemoryLines } from "./MessageBubble";
+import { StructuredMessageContent } from "./StructuredMessageContent";
 
 /* ---- Helpers ---- */
 
@@ -66,16 +67,16 @@ export function MessageList({
   }, [messages, streamingReply, streamingTools]);
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4">
+    <div className="flex-1 overflow-y-auto px-4 py-4 md:px-5">
       {error && (
         <Alert type="error" title={error} showIcon closable style={{ marginBottom: 12 }} />
       )}
       {isLoadingSession ? (
         <div className="flex items-center justify-center py-8">
-          <Spin description="Loading…" />
+          <Spin description="正在恢复导演台…" />
         </div>
       ) : messages.filter((m) => m.role !== "tool" && !m.hidden && !isMemoryOnly(m)).length === 0 ? (
-        <Empty description="Send a message to start." style={{ margin: "32px 0" }} />
+        <Empty description="输入一句话开始创作，导演台会先规划再执行。" style={{ margin: "32px 0" }} />
       ) : (
         <div className="space-y-3">
           {messages
@@ -84,21 +85,21 @@ export function MessageList({
               <MessageBubble key={`${msg.role}-${idx}`} message={msg} />
             ))}
           {streamingReply !== null && (
-            <div className="rounded border border-emerald-200 bg-emerald-50/70 px-3 py-2">
-              <div className="mb-1">
-                <Tag color="green" icon={<RobotOutlined />} style={{ fontSize: 10 }}>Assistant</Tag>
+            <div className="director-bubble rounded-[26px] border border-[rgba(47,107,95,0.18)] bg-[rgba(255,255,255,0.72)] px-4 py-3 shadow-[0_16px_34px_rgba(110,97,84,0.08)]">
+              <div className="mb-2">
+                <Tag color="green" icon={<RobotOutlined />} style={{ fontSize: 10 }}>
+                  Director Agent
+                </Tag>
               </div>
               {streamingReply.length > 0 ? (
-                <Typography.Paragraph
-                  style={{ marginBottom: 0, fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap" }}
-                >
-                  {streamingReply}
-                </Typography.Paragraph>
+                <StructuredMessageContent content={stripMemoryLines(streamingReply)} />
               ) : (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>Streaming…</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  正在推演工作流…
+                </Typography.Text>
               )}
               {streamingTools.length > 0 && (
-                <div className="mt-2 rounded border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] text-slate-600">
+                <div className="mt-3 rounded-[18px] border border-[var(--af-border)] bg-[rgba(255,253,249,0.8)] px-3 py-2 text-[10px] text-[var(--af-muted)]">
                   {mergeStreamingSummaries(streamingTools)}
                 </div>
               )}

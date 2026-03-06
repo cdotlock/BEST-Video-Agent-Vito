@@ -245,7 +245,7 @@ export function StyleInitPanel({
 
   const applyProfileToSequence = useCallback(async (profile: StyleProfile) => {
     if (!sequenceId || !sequenceKey) {
-      throw new Error("请先选择计划");
+      throw new Error("请先选择工作区");
     }
     await fetchJson(`/api/video/sequences/${encodeURIComponent(sequenceId)}/style-profile`, {
       method: "PATCH",
@@ -262,7 +262,7 @@ export function StyleInitPanel({
   const buildInjectInstruction = useCallback((profile: StyleProfile): string => {
     const tokenText = profile.styleTokens.join(", ");
     return [
-      `请将风格档案 \"${profile.name}\" 应用于当前计划。`,
+      `请将风格档案 \"${profile.name}\" 应用于当前工作区。`,
       `sequence_key=${sequenceKey ?? "unknown"}`,
       `style_profile_id=${profile.id}`,
       `style_tokens=${tokenText}`,
@@ -389,13 +389,13 @@ export function StyleInitPanel({
         open={open}
         onClose={() => changeOpen(false)}
         title="风格初始化"
-        width={drawerWidth}
+        size={drawerWidth}
       >
         <div className="space-y-3">
           {error && (
             <Alert
               type="error"
-              message={error}
+              title={error}
               showIcon
               closable
               onClose={() => setError(null)}

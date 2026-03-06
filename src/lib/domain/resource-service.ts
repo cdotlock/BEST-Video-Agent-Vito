@@ -34,6 +34,29 @@ export interface DomainResources {
   categories: CategoryGroup[];
 }
 
+export interface ResourceScopeFilter {
+  scopeType: string;
+  scopeId: string;
+}
+
+type ResourcePayloadType =
+  | "null"
+  | "boolean"
+  | "number"
+  | "string"
+  | "array"
+  | "object";
+
+const RESOURCE_DATA_ENVELOPE_VERSION = 2;
+
+interface ResourceDataEnvelope {
+  __af_resource_data_v: typeof RESOURCE_DATA_ENVELOPE_VERSION;
+  encoding: "utf-8";
+  payloadType: ResourcePayloadType;
+  payload: unknown;
+  updatedAt: string;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -45,6 +68,77 @@ async function physical(): Promise<string> {
   return resolved.physicalName;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function looksLikeJsonDocument(input: string): boolean {
+  const trimmed = input.trim();
+  if (trimmed.length < 2) return false;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) return true;
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) return true;
+  if (trimmed.startsWith("\"{") && trimmed.endsWith("}\"")) return true;
+  if (trimmed.startsWith("\"[") && trimmed.endsWith("]\"")) return true;
+  return false;
+}
+
+function unwrapLegacyData(input: unknown): unknown {
+  let current: unknown = input;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof current !== "string") break;
+    if (!looksLikeJsonDocument(current)) break;
+    try {
+      const parsed: unknown = JSON.parse(current);
+      if (parsed === current) break;
+      current = parsed;
+    } catch {
+      break;
+    }
+  }
+  return current;
+}
+
+function payloadTypeOf(input: unknown): ResourcePayloadType {
+  if (input === null) return "null";
+  if (Array.isArray(input)) return "array";
+  switch (typeof input) {
+    case "boolean":
+      return "boolean";
+    case "number":
+      return "number";
+    case "string":
+      return "string";
+    default:
+      return "object";
+  }
+}
+
+function isResourceDataEnvelope(input: unknown): input is ResourceDataEnvelope {
+  if (!isRecord(input)) return false;
+  return input.__af_resource_data_v === RESOURCE_DATA_ENVELOPE_VERSION
+    && input.encoding === "utf-8"
+    && typeof input.updatedAt === "string"
+    && "payload" in input;
+}
+
+function encodeResourceData(data: unknown): ResourceDataEnvelope {
+  const normalizedPayload = decodeResourceData(data);
+  return {
+    __af_resource_data_v: RESOURCE_DATA_ENVELOPE_VERSION,
+    encoding: "utf-8",
+    payloadType: payloadTypeOf(normalizedPayload),
+    payload: normalizedPayload,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function decodeResourceData(data: unknown): unknown {
+  if (isResourceDataEnvelope(data)) {
+    return unwrapLegacyData(data.payload);
+  }
+  return unwrapLegacyData(data);
+}
+
 function toResource(row: Record<string, unknown>): DomainResource {
   return {
     id: row.id as string,
@@ -52,7 +146,7 @@ function toResource(row: Record<string, unknown>): DomainResource {
     mediaType: row.media_type as string,
     title: (row.title as string | null) ?? null,
     url: (row.url as string | null) ?? null,
-    data: row.data ?? null,
+    data: decodeResourceData(row.data ?? null),
     keyResourceId: (row.key_resource_id as string | null) ?? (row.image_gen_id as string | null) ?? null,
     sortOrder: (row.sort_order as number) ?? 0,
   };
@@ -86,6 +180,34 @@ export async function getResourcesByScope(
   }
 
   return [...groups.entries()].map(([category, items]) => ({ category, items }));
+}
+
+/**
+ * Get resources by id, constrained to allowed scopes.
+ * Used by context injection to avoid cross-project leakage.
+ */
+export async function getResourcesByIdsInScopes(
+  resourceIds: string[],
+  scopes: ResourceScopeFilter[],
+): Promise<DomainResource[]> {
+  if (resourceIds.length === 0 || scopes.length === 0) return [];
+
+  const t = await physical();
+  const tupleSql = scopes
+    .map((_, index) => `($${index * 2 + 2}, $${index * 2 + 3})`)
+    .join(", ");
+  const scopeParams = scopes.flatMap((scope) => [scope.scopeType, scope.scopeId]);
+
+  const { rows } = await bizPool.query(
+    `SELECT *
+     FROM "${t}"
+     WHERE id::text = ANY($1::text[])
+       AND (scope_type, scope_id) IN (VALUES ${tupleSql})
+     ORDER BY category, sort_order, created_at`,
+    [resourceIds, ...scopeParams],
+  );
+
+  return (rows as Array<Record<string, unknown>>).map(toResource);
 }
 
 /**
@@ -144,7 +266,7 @@ export async function createResource(input: CreateResourceInput): Promise<string
       input.mediaType,
       input.title ?? null,
       input.url ?? null,
-      input.data != null ? JSON.stringify(input.data) : null,
+      input.data === undefined ? null : encodeResourceData(input.data),
       input.keyResourceId ?? null,
       input.sortOrder ?? 0,
     ],
@@ -174,7 +296,7 @@ export async function upsertByKeyResource(input: CreateResourceInput & { keyReso
         input.category,
         input.title ?? null,
         input.url ?? null,
-        input.data != null ? JSON.stringify(input.data) : null,
+        input.data === undefined ? null : encodeResourceData(input.data),
         input.sortOrder ?? 0,
         id,
       ],
@@ -235,6 +357,6 @@ export async function updateResourceData(
   const t = await physical();
   await bizPool.query(
     `UPDATE "${t}" SET data = $1 WHERE id = $2`,
-    [JSON.stringify(data), id],
+    [encodeResourceData(data), id],
   );
 }

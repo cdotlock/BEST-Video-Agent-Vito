@@ -1,1 +1,132 @@
 @import "tailwindcss";
+
+:root {
+  --af-page-bg: #f4efe8;
+  --af-surface: rgba(255, 253, 249, 0.8);
+  --af-surface-raised: rgba(255, 255, 255, 0.9);
+  --af-border: #e5ddd2;
+  --af-text: #1e1b18;
+  --af-muted: #6f665c;
+  --af-brand: #2f6b5f;
+  --af-accent: #c98b5b;
+  --af-soft-blue: #8da7c2;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.72), transparent 28%),
+    radial-gradient(circle at top right, rgba(201, 139, 91, 0.12), transparent 24%),
+    linear-gradient(180deg, #f7f1ea 0%, #f1ece5 48%, #ece6dd 100%);
+  color: var(--af-text);
+  font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
+}
+
+.ant-app {
+  min-height: 100vh;
+  background: transparent;
+}
+
+.ceramic-page {
+  background: transparent;
+}
+
+.ceramic-topbar {
+  border: 1px solid rgba(229, 221, 210, 0.9);
+  border-radius: 28px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 253, 249, 0.76));
+  backdrop-filter: blur(24px);
+  box-shadow:
+    0 24px 48px rgba(116, 102, 85, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.ceramic-panel {
+  border: 1px solid rgba(229, 221, 210, 0.9);
+  border-radius: 30px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(255, 253, 249, 0.72));
+  backdrop-filter: blur(18px);
+  box-shadow:
+    0 22px 44px rgba(118, 102, 83, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.ceramic-panel--raised {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 253, 249, 0.86));
+}
+
+.ceramic-stage {
+  background:
+    linear-gradient(180deg, rgba(255, 253, 249, 0.72), rgba(255, 255, 255, 0.42)),
+    radial-gradient(circle at top, rgba(141, 167, 194, 0.08), transparent 36%);
+}
+
+.ceramic-resource-panel {
+  overflow: hidden;
+}
+
+.director-bubble {
+  position: relative;
+}
+
+.director-block {
+  border: 1px solid rgba(229, 221, 210, 0.9) !important;
+  border-radius: 22px !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 253, 249, 0.72)) !important;
+  box-shadow:
+    0 16px 30px rgba(118, 102, 83, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.director-block .ant-card-body {
+  padding: 14px;
+}
+
+.director-block--note {
+  border-color: rgba(201, 139, 91, 0.18) !important;
+}
+
+.director-block--alignment {
+  border-color: rgba(201, 139, 91, 0.26) !important;
+}
+
+.director-block--plan {
+  border-color: rgba(47, 107, 95, 0.22) !important;
+}
+
+.director-block--material {
+  border-color: rgba(141, 167, 194, 0.28) !important;
+}
+
+.director-block--review {
+  border-color: rgba(103, 155, 165, 0.3) !important;
+}
+
+.director-block--receipt {
+  border-color: rgba(124, 114, 102, 0.22) !important;
+}
+
+.ceramic-chip {
+  border: 1px solid rgba(229, 221, 210, 0.95);
+  border-radius: 999px;
+  background: rgba(255, 253, 249, 0.92);
+  color: var(--af-text);
+}
+
+.director-input-shell {
+  border: 1px solid rgba(229, 221, 210, 0.95);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 253, 249, 0.84));
+  box-shadow:
+    0 18px 34px rgba(118, 102, 83, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}

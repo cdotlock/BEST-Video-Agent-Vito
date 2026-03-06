@@ -14,6 +14,7 @@ import { ensureVideoSchema } from "@/lib/video/schema";
 import { prisma } from "@/lib/db";
 import {
   getResourcesByScope,
+  getResourcesByIdsInScopes,
   deleteResourcesByScope,
   updateResourceData,
   deleteResource,
@@ -86,6 +87,28 @@ export async function listProjects(): Promise<VideoProjectSummary[]> {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   }));
+}
+
+export async function getProjectById(
+  projectId: string,
+): Promise<VideoProjectSummary | null> {
+  const tProjects = await physical("video_projects");
+  const { rows } = await bizPool.query(
+    `SELECT id, name, description, created_at, updated_at
+     FROM "${tProjects}"
+     WHERE id = $1
+     LIMIT 1`,
+    [projectId],
+  );
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    description: row.description == null ? null : String(row.description),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
 }
 
 export async function createProject(
@@ -251,6 +274,17 @@ export async function getResources(
 /* ------------------------------------------------------------------ */
 
 export { updateResourceData, deleteResource };
+
+export async function getResourcesForContext(
+  sequenceId: string,
+  projectId: string,
+  resourceIds: string[],
+): Promise<DomainResource[]> {
+  return getResourcesByIdsInScopes(resourceIds, [
+    { scopeType: "project", scopeId: projectId },
+    { scopeType: "sequence", scopeId: sequenceId },
+  ]);
+}
 
 export async function getSequenceContent(sequenceId: string): Promise<string | null> {
   const tSeq = await physical("video_sequences");
