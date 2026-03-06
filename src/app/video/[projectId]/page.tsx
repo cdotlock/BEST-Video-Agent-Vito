@@ -330,6 +330,8 @@ export default function VideoWorkflowPage() {
     />
   );
 
+  const directorConsoleStorageKey = `${projectId}:${data.selectedSequence?.sequenceKey ?? "default"}`;
+
   return (
     <ConfigProvider theme={videoWorkspaceTheme}>
       <main className="ceramic-page flex h-screen w-full flex-col text-[var(--af-text)]">
@@ -419,7 +421,7 @@ export default function VideoWorkflowPage() {
         </div>
 
         <div className="flex min-h-0 flex-1 gap-4 px-4 pb-4 pt-4">
-          <section className="ceramic-panel flex min-w-0 flex-1 flex-col overflow-hidden">
+          <section className="ceramic-panel relative flex min-w-0 flex-1 flex-col overflow-hidden">
             <StyleInitPanel
               projectId={projectId}
               sequenceId={data.selectedSequence?.id ?? null}
@@ -431,12 +433,19 @@ export default function VideoWorkflowPage() {
             />
 
             <DirectorConsolePanel
+              key={directorConsoleStorageKey}
               resources={data.resources}
               executionMode={executionMode}
               memoryUser={memoryUser}
               proConfig={proConfig}
               contextMaterialCount={contextMaterials.length}
               styleReferenceCount={styleReferenceMaterials.length}
+              workspaceLabel={data.selectedSequence
+                ? formatWorkspaceLabel(data.selectedSequence.sequenceKey, data.selectedSequence.sequenceName)
+                : undefined}
+              workspaceView={workspaceView}
+              sessionId={currentSessionId}
+              storageKey={directorConsoleStorageKey}
               capabilitySkills={DEFAULT_SKILLS}
               capabilityMcps={DEFAULT_MCPS}
               onInjectMessage={handleInjectMessage}
@@ -445,7 +454,7 @@ export default function VideoWorkflowPage() {
               onSwitchToClip={() => setWorkspaceView("clip")}
             />
 
-            <div className="min-h-0 flex-1">
+            <div className="min-h-0 flex-1 pt-16 md:pt-[4.5rem]">
               <VideoChat
                 key={chatKey}
                 initialSessionId={currentSessionId}

@@ -1,61 +1,190 @@
 "use client";
 
-import { useMemo } from "react";
-import { Button, Card, Tag, Typography } from "antd";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
   BgColorsOutlined,
-  CompassOutlined,
-  DeploymentUnitOutlined,
+  BookOutlined,
+  BranchesOutlined,
+  CloseOutlined,
+  DownOutlined,
+  RadarChartOutlined,
+  RightOutlined,
   ScissorOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
+import { Button, Spin, Typography } from "antd";
+import { fetchJson } from "@/app/components/client-utils";
+import { inferReferenceRole, type VideoReferenceRole } from "@/lib/video/reference-roles";
 import type {
   DomainResources,
   ExecutionMode,
+  MemoryRecommendations,
   VideoProConfig,
+  WorkflowPathRecommendationsResult,
+  WorkspaceView,
 } from "../types";
-import { inferReferenceRole, type VideoReferenceRole } from "@/lib/video/reference-roles";
 
-export interface DirectorConsolePanelProps {
+const REFERENCE_ROLES: VideoReferenceRole[] = [
+  "style_ref",
+  "scene_ref",
+  "empty_shot_ref",
+  "character_ref",
+  "motion_ref",
+  "first_frame_ref",
+  "last_frame_ref",
+  "storyboard_ref",
+  "dialogue_ref",
+];
+
+const SEVERITY_ORDER: Record<GapSeverity, number> = {
+  critical: 0,
+  warn: 1,
+  soft: 2,
+};
+
+interface DirectorConsolePanelProps {
   resources: DomainResources | null;
   executionMode: ExecutionMode;
   memoryUser: string;
   proConfig: VideoProConfig;
   contextMaterialCount: number;
   styleReferenceCount: number;
+  workspaceLabel?: string;
+  workspaceView: WorkspaceView;
+  sessionId?: string;
+  storageKey: string;
   capabilitySkills?: string[];
   capabilityMcps?: string[];
-  onInjectMessage?: (message: string) => void;
-  onOpenStyle?: () => void;
-  onOpenPro?: () => void;
-  onSwitchToClip?: () => void;
+  onInjectMessage: (text: string) => void;
+  onOpenStyle: () => void;
+  onOpenPro: () => void;
+  onSwitchToClip: () => void;
 }
 
-interface QuickActionSpec {
+interface ResourceInsights {
+  totalAssets: number;
+  imageCount: number;
+  videoCount: number;
+  jsonCount: number;
+  roleCounts: Record<VideoReferenceRole, number>;
+  anchorCoverage: number;
+}
+
+interface CurrentCue {
+  title: string;
+  summary: string;
+  routeLabel: string;
+}
+
+type GapSeverity = "critical" | "warn" | "soft";
+type GapActionKind = "inject" | "style" | "pro" | "clip";
+type StoryboardDensity = "single" | "grid_2x2" | "grid_3x3";
+type PillTone = "neutral" | "accent" | GapSeverity;
+
+interface GapItem {
   id: string;
+  shortLabel: string;
   label: string;
-  hint: string;
-  onTrigger: (() => void) | null;
+  detail: string;
+  cue: string;
+  severity: GapSeverity;
+  actionLabel: string;
+  actionKind: GapActionKind;
+  prompt?: string;
 }
 
-type RoleCountMap = Record<VideoReferenceRole, number>;
+interface ConsoleAction {
+  key: string;
+  title: string;
+  description: string;
+  kind: GapActionKind;
+  prompt?: string;
+}
 
-const ROLE_META: Array<{
-  role: VideoReferenceRole;
-  label: string;
-  tone: "gold" | "blue" | "green" | "purple" | "cyan";
-}> = [
-  { role: "style_ref", label: "画风", tone: "gold" },
-  { role: "scene_ref", label: "场景", tone: "green" },
-  { role: "empty_shot_ref", label: "空镜", tone: "cyan" },
-  { role: "character_ref", label: "角色", tone: "blue" },
-  { role: "motion_ref", label: "动作", tone: "purple" },
-  { role: "first_frame_ref", label: "首帧", tone: "gold" },
-  { role: "last_frame_ref", label: "尾帧", tone: "gold" },
-  { role: "storyboard_ref", label: "分镜", tone: "purple" },
-  { role: "dialogue_ref", label: "对白", tone: "cyan" },
-];
+const ISLAND_BAR_STYLE: CSSProperties = {
+  border: "1px solid rgba(229, 221, 210, 0.96)",
+  background: "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(255,253,249,0.86))",
+  boxShadow: "0 18px 36px rgba(116, 102, 85, 0.12), inset 0 1px 0 rgba(255,255,255,0.82)",
+  backdropFilter: "blur(24px)",
+};
 
-function createRoleCountMap(): RoleCountMap {
+const ISLAND_PANEL_STYLE: CSSProperties = {
+  border: "1px solid rgba(229, 221, 210, 0.96)",
+  background:
+    "radial-gradient(circle at top right, rgba(141,167,194,0.12), transparent 30%), radial-gradient(circle at bottom left, rgba(201,139,91,0.12), transparent 28%), linear-gradient(180deg, rgba(255,255,255,0.98), rgba(255,253,249,0.9))",
+  boxShadow: "0 28px 56px rgba(116, 102, 85, 0.18), inset 0 1px 0 rgba(255,255,255,0.82)",
+  maxHeight: "min(38rem, calc(100dvh - 220px))",
+};
+
+const ISLAND_CARD_STYLE: CSSProperties = {
+  border: "1px solid rgba(229, 221, 210, 0.92)",
+  background: "linear-gradient(180deg, rgba(255,255,255,0.84), rgba(255,253,249,0.76))",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.82)",
+};
+
+function pillStyle(tone: PillTone): CSSProperties {
+  if (tone === "accent") {
+    return {
+      border: "1px solid rgba(201, 139, 91, 0.18)",
+      background: "rgba(201, 139, 91, 0.16)",
+      color: "#b36b26",
+    };
+  }
+
+  if (tone === "critical") {
+    return {
+      border: "1px solid rgba(217, 119, 87, 0.18)",
+      background: "rgba(248, 223, 216, 0.86)",
+      color: "#cc4d3a",
+    };
+  }
+
+  if (tone === "warn") {
+    return {
+      border: "1px solid rgba(214, 162, 77, 0.16)",
+      background: "rgba(250, 235, 197, 0.82)",
+      color: "#ad7a18",
+    };
+  }
+
+  return {
+    border: "1px solid rgba(229, 221, 210, 0.94)",
+    background: "rgba(255, 253, 249, 0.92)",
+    color: "var(--af-text)",
+  };
+}
+
+function statusDotStyle(tone: "critical" | "warn" | "calm"): CSSProperties {
+  if (tone === "critical") {
+    return {
+      background: "#d97757",
+      boxShadow: "0 0 0 6px rgba(217, 119, 87, 0.14)",
+    };
+  }
+  if (tone === "warn") {
+    return {
+      background: "#d6a24d",
+      boxShadow: "0 0 0 6px rgba(214, 162, 77, 0.14)",
+    };
+  }
+  return {
+    background: "#2f6b5f",
+    boxShadow: "0 0 0 6px rgba(47, 107, 95, 0.12)",
+  };
+}
+
+function ConsolePill({ children, tone = "neutral" }: { children: ReactNode; tone?: PillTone }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px]"
+      style={pillStyle(tone)}
+    >
+      {children}
+    </span>
+  );
+}
+
+function createEmptyRoleCountMap(): Record<VideoReferenceRole, number> {
   return {
     style_ref: 0,
     scene_ref: 0,
@@ -69,76 +198,300 @@ function createRoleCountMap(): RoleCountMap {
   };
 }
 
-function summarizeStoryboardDensity(config: VideoProConfig): string {
-  const text = `${config.workflowTemplate}\n${config.customKnowledge}`.toLowerCase();
-  if (text.includes("九宫格") || text.includes("3x3")) return "九宫格探索";
-  if (text.includes("四宫格") || text.includes("2x2")) return "四宫格探索";
-  if (text.trim().length > 0) return "单张分镜";
-  return "按不确定性动态决定";
+function hasKeyword(text: string, keywords: string[]): boolean {
+  return keywords.some((keyword) => text.includes(keyword));
 }
 
-function buildRoleCounts(resources: DomainResources | null): RoleCountMap {
-  const counts = createRoleCountMap();
-  if (!resources) return counts;
+function buildResourceInsights(resources: DomainResources | null): ResourceInsights {
+  const roleCounts = createEmptyRoleCountMap();
+  let totalAssets = 0;
+  let imageCount = 0;
+  let videoCount = 0;
+  let jsonCount = 0;
 
-  for (const group of resources.categories) {
+  for (const group of resources?.categories ?? []) {
     for (const item of group.items) {
+      totalAssets += 1;
+      if (item.mediaType === "image") imageCount += 1;
+      if (item.mediaType === "video") videoCount += 1;
+      if (item.mediaType === "json") jsonCount += 1;
+
       const role = inferReferenceRole({
         category: item.category,
         mediaType: item.mediaType,
         title: item.title,
         data: item.data,
       });
-      if (!role) continue;
-      counts[role] += 1;
+      if (role) roleCounts[role] += 1;
     }
   }
 
-  return counts;
+  let anchorCoverage = 0;
+  for (const role of REFERENCE_ROLES) {
+    if (roleCounts[role] > 0) anchorCoverage += 1;
+  }
+
+  return {
+    totalAssets,
+    imageCount,
+    videoCount,
+    jsonCount,
+    roleCounts,
+    anchorCoverage,
+  };
 }
 
-function buildRouteTracks(
-  config: VideoProConfig,
-  roleCounts: RoleCountMap,
-  imageCount: number,
-  videoCount: number,
-): string[] {
-  const text = `${config.workflowTemplate}\n${config.customKnowledge}`.toLowerCase();
-  const tracks = [
-    `分镜密度: ${summarizeStoryboardDensity(config)}`,
-    roleCounts.first_frame_ref > 0 && roleCounts.last_frame_ref > 0
-      ? "视频路径: 首尾帧受控路线优先"
-      : roleCounts.first_frame_ref > 0
-        ? "视频路径: 首帧图生视频优先"
-        : videoCount > 0 && imageCount > 0
-          ? "视频路径: mixed refs 优先"
-          : "视频路径: 先补关键锚点，再进入视频生成",
-    roleCounts.character_ref > 0
-      ? "角色策略: 已有角色锚点，可先保身份一致性"
-      : "角色策略: 角色锚点仍偏弱，建议先补稳定人设",
-    roleCounts.empty_shot_ref > 0
-      ? "节奏策略: 已有空镜，可组织呼吸与转场"
-      : "节奏策略: 空镜偏少，容易只剩主镜头堆叠",
-  ];
-
-  if (text.includes("对白") || text.includes("口播") || text.includes("dialogue")) {
-    tracks.push("叙事策略: 先对白脚本，再让镜头围绕台词组织");
+function inferStoryboardDensity(
+  roleCounts: Record<VideoReferenceRole, number>,
+  configText: string,
+): StoryboardDensity | undefined {
+  if (roleCounts.storyboard_ref >= 5 || hasKeyword(configText, ["九宫格", "3x3"])) {
+    return "grid_3x3";
   }
-  if (text.includes("粗剪") || text.includes("多候选") || videoCount >= 3) {
-    tracks.push("交付策略: 保留多候选，进入粗剪再定稿");
+  if (roleCounts.storyboard_ref >= 2 || hasKeyword(configText, ["四宫格", "2x2"])) {
+    return "grid_2x2";
   }
-  return tracks.slice(0, 5);
+  if (roleCounts.storyboard_ref > 0 || configText.trim().length > 0) {
+    return "single";
+  }
+  return undefined;
 }
 
-function buildMissingAnchors(roleCounts: RoleCountMap, imageCount: number, videoCount: number): string[] {
-  const missing: string[] = [];
-  if (roleCounts.storyboard_ref === 0) missing.push("缺少分镜探索");
-  if (roleCounts.style_ref === 0 && imageCount > 0) missing.push("可补 style_ref");
-  if (roleCounts.character_ref === 0 && imageCount > 0) missing.push("可补角色锚点");
-  if (roleCounts.empty_shot_ref === 0) missing.push("可补空镜节奏");
-  if (roleCounts.first_frame_ref === 0 && imageCount > 0) missing.push("可补首帧参考");
-  if (videoCount < 2) missing.push("视频候选仍偏少");
-  return missing.slice(0, 5);
+function buildGapItems(input: {
+  insights: ResourceInsights;
+  executionMode: ExecutionMode;
+  workspaceView: WorkspaceView;
+  contextMaterialCount: number;
+  styleReferenceCount: number;
+  configText: string;
+}): GapItem[] {
+  const { insights, executionMode, workspaceView, contextMaterialCount, styleReferenceCount, configText } = input;
+  const gaps: GapItem[] = [];
+
+  if (workspaceView === "clip" && insights.videoCount === 0) {
+    gaps.push({
+      id: "clip_input",
+      shortLabel: "缺候选",
+      label: "还没有视频候选",
+      detail: "当前已切到剪辑区，但还没有可进入时间线的候选视频。",
+      cue: "先补视频候选，再进入粗剪",
+      severity: "critical",
+      actionLabel: "回到生成",
+      actionKind: "inject",
+      prompt: "先补出一到两条视频候选，再进入粗剪比较节奏和镜头衔接。",
+    });
+  }
+
+  if (insights.roleCounts.storyboard_ref === 0) {
+    gaps.push({
+      id: "storyboard",
+      shortLabel: "差分镜",
+      label: "缺少分镜探索",
+      detail: "先做四宫格或九宫格，把镜头密度和构图范围拉开，再锁主镜头。",
+      cue: "先补四宫格分镜，再锁定镜头",
+      severity: "critical",
+      actionLabel: "补分镜",
+      actionKind: "inject",
+      prompt: "请先补四宫格或九宫格分镜探索，比较镜头密度和构图方案，再决定后续视频生成路线。",
+    });
+  }
+
+  if (
+    insights.roleCounts.first_frame_ref === 0
+    && insights.roleCounts.last_frame_ref === 0
+    && insights.videoCount === 0
+    && insights.imageCount > 0
+  ) {
+    gaps.push({
+      id: "anchor_frame",
+      shortLabel: "差关键帧",
+      label: "缺少首帧或尾帧锚点",
+      detail: "画面已有素材，但视频生成还没有关键帧约束，运动容易飘。",
+      cue: "先锁首帧或首尾帧，再推进视频生成",
+      severity: "critical",
+      actionLabel: "锁首尾帧",
+      actionKind: "inject",
+      prompt: "请优先用现有素材锁定首帧或首尾帧锚点，再推进视频生成，避免只靠 prompt 漂移。",
+    });
+  }
+
+  if (insights.roleCounts.empty_shot_ref === 0 && insights.totalAssets > 0) {
+    gaps.push({
+      id: "rhythm",
+      shortLabel: "差空镜",
+      label: "可补空镜节奏",
+      detail: "镜头更像素材堆叠，建议主动补空镜、过渡镜头和节奏呼吸。",
+      cue: "补空镜与过渡，让节奏成立",
+      severity: "warn",
+      actionLabel: "补空镜",
+      actionKind: "inject",
+      prompt: "请补空镜和过渡节奏镜头，给这个片段留出呼吸空间，不要只堆主镜头。",
+    });
+  }
+
+  if (insights.roleCounts.character_ref === 0 && insights.totalAssets > 0) {
+    gaps.push({
+      id: "character",
+      shortLabel: "差角色锚",
+      label: "角色锚点偏弱",
+      detail: "当前还没有稳定的角色立绘或人物锚点，身份和服装容易跳。",
+      cue: "先补角色锚点，再推主镜头",
+      severity: "warn",
+      actionLabel: "补角色锚点",
+      actionKind: "inject",
+      prompt: "请先补角色立绘或 character_ref，稳定人物身份、服装和表情后再推进主镜头。",
+    });
+  }
+
+  if (insights.roleCounts.style_ref + styleReferenceCount === 0) {
+    gaps.push({
+      id: "style",
+      shortLabel: "差风格",
+      label: "风格参考仍偏少",
+      detail: "当前没有稳定的 style_ref 或风格档案，画风容易漂移。",
+      cue: "先补风格参考，再放大候选",
+      severity: "soft",
+      actionLabel: "管理风格",
+      actionKind: "style",
+    });
+  }
+
+  if (contextMaterialCount === 0 && executionMode === "checkpoint" && !hasKeyword(configText, ["目标", "剧情", "场景"])) {
+    gaps.push({
+      id: "context",
+      shortLabel: "差目标",
+      label: "工作区目标还不够清楚",
+      detail: "这轮上下文很轻，Agent 会更依赖即时对话，建议先补目标、场景和约束。",
+      cue: "先补一句导演意图，再开始执行",
+      severity: "soft",
+      actionLabel: "整理目标",
+      actionKind: "inject",
+      prompt: "请先整理这一段的导演意图、角色、场景和风格约束，再开始执行具体生成。",
+    });
+  }
+
+  gaps.sort((left, right) => SEVERITY_ORDER[left.severity] - SEVERITY_ORDER[right.severity]);
+  return gaps;
+}
+
+function buildCurrentCue(input: {
+  insights: ResourceInsights;
+  gaps: GapItem[];
+  workspaceView: WorkspaceView;
+  configText: string;
+}): CurrentCue {
+  const { insights, gaps, workspaceView, configText } = input;
+  const topGap = gaps[0];
+
+  if (workspaceView === "clip" && insights.videoCount > 0) {
+    return {
+      title: "粗剪阶段已经就绪",
+      summary: "切到时间线，比较候选节奏、主镜头和呼吸镜头的组合。",
+      routeLabel: "Clip Studio",
+    };
+  }
+
+  if (topGap) {
+    return {
+      title: topGap.cue,
+      summary: topGap.detail,
+      routeLabel: topGap.label,
+    };
+  }
+
+  if (insights.videoCount > 0) {
+    return {
+      title: "候选视频已经成型",
+      summary: "现在更适合进入粗剪，比较节奏、衔接和最终主线，而不是继续堆素材。",
+      routeLabel: "多候选粗剪",
+    };
+  }
+
+  if (insights.roleCounts.first_frame_ref > 0 && insights.roleCounts.last_frame_ref > 0) {
+    return {
+      title: "首尾帧路线已成型",
+      summary: "关键锚点已经具备，适合推进更稳定的图生视频或 mixed refs。",
+      routeLabel: "首尾帧路线",
+    };
+  }
+
+  if (insights.roleCounts.storyboard_ref > 0) {
+    return {
+      title: "分镜探索已经起势",
+      summary: "先用现有分镜筛一轮镜头，再决定是否补关键帧、角色锚点或空镜。",
+      routeLabel: "分镜优先",
+    };
+  }
+
+  if (hasKeyword(configText, ["对白", "台词", "dialogue", "口播"])) {
+    return {
+      title: "对白优先，镜头围绕台词组织",
+      summary: "这轮更适合先清对白节拍，再让镜头为叙事服务。",
+      routeLabel: "对白驱动",
+    };
+  }
+
+  return {
+    title: "先拉起第一轮导演蓝图",
+    summary: "先做分镜探索或风格打样，不要直接 prompt-only 地硬推生成。",
+    routeLabel: "等待锚点",
+  };
+}
+
+function buildActionDeck(input: {
+  gaps: GapItem[];
+  insights: ResourceInsights;
+  workspaceView: WorkspaceView;
+}): ConsoleAction[] {
+  const { gaps, insights, workspaceView } = input;
+  const actions: ConsoleAction[] = [];
+
+  for (const gap of gaps.slice(0, 3)) {
+    actions.push({
+      key: gap.id,
+      title: gap.actionLabel,
+      description: gap.detail,
+      kind: gap.actionKind,
+      prompt: gap.prompt,
+    });
+  }
+
+  if (insights.videoCount > 0 && workspaceView !== "clip") {
+    actions.push({
+      key: "go_clip",
+      title: "进入粗剪",
+      description: "候选视频已经可用，直接去时间线比较节奏与最佳组合。",
+      kind: "clip",
+    });
+  }
+
+  if (insights.roleCounts.style_ref === 0) {
+    actions.push({
+      key: "open_style",
+      title: "补风格档案",
+      description: "打开 Style，补 style_ref、风格词和画面基调。",
+      kind: "style",
+    });
+  }
+
+  actions.push({
+    key: "open_pro",
+    title: "打开 Pro",
+    description: "长期知识、模板和记忆偏好仍在 Pro 里维护。",
+    kind: "pro",
+  });
+
+  const deduped = new Map<string, ConsoleAction>();
+  for (const item of actions) {
+    if (!deduped.has(item.key)) deduped.set(item.key, item);
+  }
+  return [...deduped.values()].slice(0, 4);
+}
+
+function buildStatusTone(gaps: GapItem[]): "critical" | "warn" | "calm" {
+  if (gaps.some((item) => item.severity === "critical")) return "critical";
+  if (gaps.some((item) => item.severity === "warn")) return "warn";
+  return "calm";
 }
 
 export function DirectorConsolePanel({
@@ -148,6 +501,10 @@ export function DirectorConsolePanel({
   proConfig,
   contextMaterialCount,
   styleReferenceCount,
+  workspaceLabel,
+  workspaceView,
+  sessionId,
+  storageKey,
   capabilitySkills = [],
   capabilityMcps = [],
   onInjectMessage,
@@ -155,255 +512,426 @@ export function DirectorConsolePanel({
   onOpenPro,
   onSwitchToClip,
 }: DirectorConsolePanelProps) {
-  const roleCounts = useMemo(() => buildRoleCounts(resources), [resources]);
+  const [isOpen, setIsOpen] = useState(false);
+  const [isLoadingIntel, setIsLoadingIntel] = useState(false);
+  const [memorySummary, setMemorySummary] = useState<MemoryRecommendations | null>(null);
+  const [pathSummary, setPathSummary] = useState<WorkflowPathRecommendationsResult | null>(null);
 
-  const mediaCounts = useMemo(() => {
-    const totals = { image: 0, video: 0, json: 0 };
-    if (!resources) return totals;
-    for (const group of resources.categories) {
-      for (const item of group.items) {
-        if (item.mediaType === "image") totals.image += 1;
-        else if (item.mediaType === "video") totals.video += 1;
-        else if (item.mediaType === "json") totals.json += 1;
+  const configText = useMemo(
+    () => `${proConfig.workflowTemplate}\n${proConfig.customKnowledge}`.toLowerCase(),
+    [proConfig.customKnowledge, proConfig.workflowTemplate],
+  );
+
+  const insights = useMemo(() => buildResourceInsights(resources), [resources]);
+  const gaps = useMemo(
+    () => buildGapItems({
+      insights,
+      executionMode,
+      workspaceView,
+      contextMaterialCount,
+      styleReferenceCount,
+      configText,
+    }),
+    [configText, contextMaterialCount, executionMode, insights, styleReferenceCount, workspaceView],
+  );
+  const currentCue = useMemo(
+    () => buildCurrentCue({ insights, gaps, workspaceView, configText }),
+    [configText, gaps, insights, workspaceView],
+  );
+  const actionDeck = useMemo(
+    () => buildActionDeck({ gaps, insights, workspaceView }),
+    [gaps, insights, workspaceView],
+  );
+  const tone = useMemo(() => buildStatusTone(gaps), [gaps]);
+
+  const topGap = gaps[0];
+  const compactHint = topGap?.shortLabel ?? (insights.videoCount > 0 ? "可进粗剪" : "可继续推进");
+  const compactStatus = sessionId ? "会话已连线" : "等待首条导演指令";
+  const panelId = useMemo(
+    () => `director-island-${storageKey.replace(/[^a-zA-Z0-9_-]+/g, "-")}`,
+    [storageKey],
+  );
+
+  useEffect(() => {
+    setIsOpen(false);
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ memoryUser });
+    const goal = proConfig.workflowTemplate.trim() || proConfig.customKnowledge.trim();
+    if (goal.length > 0) params.set("goal", goal);
+
+    const storyboardDensity = inferStoryboardDensity(insights.roleCounts, configText);
+    if (storyboardDensity) params.set("storyboardDensity", storyboardDensity);
+    if (insights.imageCount > 0) params.set("hasImageReference", "true");
+    if (insights.videoCount > 0) params.set("hasReferenceVideo", "true");
+    if (insights.roleCounts.first_frame_ref > 0) params.set("hasFirstFrameReference", "true");
+    if (insights.roleCounts.last_frame_ref > 0) params.set("hasLastFrameReference", "true");
+    if (insights.videoCount > 1 || hasKeyword(configText, ["粗剪", "多候选", "拼接"])) {
+      params.set("wantsMultiClip", "true");
+    }
+    if (
+      insights.roleCounts.character_ref > insights.roleCounts.empty_shot_ref
+      || hasKeyword(configText, ["角色优先", "立绘优先"])
+    ) {
+      params.set("prefersCharacterPriority", "true");
+    }
+    if (
+      insights.roleCounts.empty_shot_ref > 0
+      || hasKeyword(configText, ["空镜优先", "节奏空镜"])
+    ) {
+      params.set("prefersEmptyShotPriority", "true");
+    }
+
+    const loadIntel = async () => {
+      setIsLoadingIntel(true);
+      try {
+        const [memoryResult, pathResult] = await Promise.allSettled([
+          fetchJson<MemoryRecommendations>(
+            `/api/video/memory/recommendations?memoryUser=${encodeURIComponent(memoryUser)}`,
+          ),
+          fetchJson<WorkflowPathRecommendationsResult>(
+            `/api/video/memory/path-recommendations?${params.toString()}`,
+          ),
+        ]);
+
+        if (cancelled) return;
+
+        setMemorySummary(memoryResult.status === "fulfilled" ? memoryResult.value : null);
+        setPathSummary(pathResult.status === "fulfilled" ? pathResult.value : null);
+      } finally {
+        if (!cancelled) setIsLoadingIntel(false);
       }
-    }
-    return totals;
-  }, [resources]);
+    };
 
-  const routeTracks = useMemo(
-    () => buildRouteTracks(proConfig, roleCounts, mediaCounts.image, mediaCounts.video),
-    [mediaCounts.image, mediaCounts.video, proConfig, roleCounts],
-  );
+    void loadIntel();
 
-  const missingAnchors = useMemo(
-    () => buildMissingAnchors(roleCounts, mediaCounts.image, mediaCounts.video),
-    [mediaCounts.image, mediaCounts.video, roleCounts],
-  );
-
-  const quickActions = useMemo<QuickActionSpec[]>(() => {
-    const actions: QuickActionSpec[] = [];
-
-    if (roleCounts.storyboard_ref === 0 && onInjectMessage) {
-      actions.push({
-        id: "storyboard-grid",
-        label: "补四宫格分镜",
-        hint: "先扩探索面，再锁定镜头",
-        onTrigger: () => onInjectMessage(
-          "请基于当前项目与已绑定素材，先生成一轮四宫格分镜探索，明确关键镜头、节奏和画面关系，再进入后续生成。",
-        ),
-      });
-    }
-
-    if (roleCounts.first_frame_ref > 0 && roleCounts.last_frame_ref > 0 && onInjectMessage) {
-      actions.push({
-        id: "first-last",
-        label: "走首尾帧路线",
-        hint: "约束运动起止，提升稳定性",
-        onTrigger: () => onInjectMessage(
-          "请优先使用当前首帧与尾帧参考，生成 2 到 3 条首尾帧受控视频候选，并在 review_block 中比较动作连贯性与结尾稳定性。",
-        ),
-      });
-    } else if (roleCounts.first_frame_ref > 0 && onInjectMessage) {
-      actions.push({
-        id: "first-frame",
-        label: "走首帧视频",
-        hint: "用现有首帧快速推进候选",
-        onTrigger: () => onInjectMessage(
-          "请优先使用当前首帧参考生成视频候选，明确镜头运动与节奏，并在 review_block 中判断是否还需要补尾帧或 mixed refs。",
-        ),
-      });
-    }
-
-    if (roleCounts.character_ref === 0 && mediaCounts.image > 0 && onInjectMessage) {
-      actions.push({
-        id: "character-pack",
-        label: "补角色锚点",
-        hint: "先稳身份，再做镜头变化",
-        onTrigger: () => onInjectMessage(
-          "请从当前图片素材中优先整理或生成角色锚点，稳定身份特征后，再进入分镜或视频生成。",
-        ),
-      });
-    }
-
-    if (roleCounts.empty_shot_ref === 0 && onInjectMessage) {
-      actions.push({
-        id: "empty-shot",
-        label: "补空镜节奏",
-        hint: "给镜头呼吸和过渡空间",
-        onTrigger: () => onInjectMessage(
-          "请优先补一组 scene_ref 和 empty_shot_ref，用于建立空间、气氛和转场节奏，不要只生成主体镜头。",
-        ),
-      });
-    }
-
-    if (mediaCounts.video >= 2) {
-      actions.push({
-        id: "rough-cut",
-        label: "进入粗剪",
-        hint: "把候选片段拉进 Clip Studio",
-        onTrigger: onSwitchToClip ?? null,
-      });
-    }
-
-    actions.push({
-      id: "style",
-      label: "管理风格",
-      hint: "补 style_ref 与风格档案",
-      onTrigger: onOpenStyle ?? null,
-    });
-    actions.push({
-      id: "pro",
-      label: "打开 Pro",
-      hint: "调整知识、模板与记忆",
-      onTrigger: onOpenPro ?? null,
-    });
-
-    return actions.slice(0, 6);
+    return () => {
+      cancelled = true;
+    };
   }, [
-    mediaCounts.image,
-    mediaCounts.video,
-    onInjectMessage,
-    onOpenPro,
-    onOpenStyle,
-    onSwitchToClip,
-    roleCounts.character_ref,
-    roleCounts.empty_shot_ref,
-    roleCounts.first_frame_ref,
-    roleCounts.last_frame_ref,
-    roleCounts.storyboard_ref,
+    configText,
+    insights.imageCount,
+    insights.roleCounts,
+    insights.videoCount,
+    isOpen,
+    memoryUser,
+    proConfig.customKnowledge,
+    proConfig.workflowTemplate,
   ]);
 
+  const runAction = (action: ConsoleAction) => {
+    setIsOpen(false);
+
+    if (action.kind === "style") {
+      onOpenStyle();
+      return;
+    }
+    if (action.kind === "pro") {
+      onOpenPro();
+      return;
+    }
+    if (action.kind === "clip") {
+      onSwitchToClip();
+      return;
+    }
+    if (action.prompt) {
+      onInjectMessage(action.prompt);
+    }
+  };
+
   return (
-    <Card
-      size="small"
-      className="director-console-panel mx-3 mt-3 !border-transparent"
-      styles={{ body: { padding: 14 } }}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <Typography.Text strong style={{ fontSize: 13, color: "var(--af-text)" }}>
-            Director Console
-          </Typography.Text>
-          <div className="mt-1 text-[11px] text-[var(--af-muted)]">
-            把路径、记忆、能力和素材缺口显式化，帮助你以导演方式驱动 Agent。
+    <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-3">
+      <div className="pointer-events-auto relative w-full max-w-[860px]" data-console-key={storageKey}>
+        <button
+          type="button"
+          aria-expanded={isOpen}
+          aria-controls={panelId}
+          onClick={() => setIsOpen((prev) => !prev)}
+          className="flex min-h-[52px] w-full items-center justify-between gap-3 rounded-full px-3.5 py-2 text-left transition duration-200 hover:-translate-y-0.5"
+          style={ISLAND_BAR_STYLE}
+        >
+          <div className="min-w-0 flex items-center gap-3">
+            <span
+              aria-hidden="true"
+              className="inline-flex h-[10px] w-[10px] shrink-0 rounded-full"
+              style={statusDotStyle(tone)}
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[var(--af-muted)]">
+                <span>Agent Island</span>
+                <span className="hidden md:inline">{compactStatus}</span>
+              </div>
+              <div className="truncate text-sm font-semibold text-[var(--af-text)]">{currentCue.title}</div>
+            </div>
           </div>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          <Tag color={executionMode === "yolo" ? "green" : "gold"} style={{ margin: 0 }}>
-            {executionMode === "yolo" ? "YOLO 自动推进" : "Checkpoint 对齐优先"}
-          </Tag>
-          <Tag style={{ margin: 0 }}>memory:{memoryUser}</Tag>
-          {proConfig.enableSelfReview && <Tag color="blue" style={{ margin: 0 }}>self-review</Tag>}
-          {proConfig.workflowTemplate.trim().length > 0 && <Tag color="purple" style={{ margin: 0 }}>workflow template</Tag>}
-          {proConfig.customKnowledge.trim().length > 0 && <Tag color="cyan" style={{ margin: 0 }}>custom knowledge</Tag>}
-        </div>
+
+          <div className="hidden min-w-0 flex-1 items-center justify-end gap-2 md:flex">
+            <ConsolePill>{workspaceView === "clip" ? "剪辑监看" : "对话导演"}</ConsolePill>
+            <ConsolePill tone="accent">{compactHint}</ConsolePill>
+          </div>
+
+          <div className="flex items-center gap-2 text-[var(--af-brand)]">
+            <span className="hidden text-xs font-medium sm:inline">展开监控台</span>
+            <DownOutlined className={`text-xs transition-transform ${isOpen ? "rotate-180" : ""}`} />
+          </div>
+        </button>
+
+        <section
+          id={panelId}
+          role="dialog"
+          aria-label="Director Console"
+          aria-hidden={!isOpen}
+          className={`absolute left-1/2 top-[62px] z-20 w-[min(calc(100vw-48px),860px)] -translate-x-1/2 overflow-hidden rounded-[30px] transition duration-200 md:w-[min(calc(100%-24px),860px)] ${
+            isOpen
+              ? "pointer-events-auto translate-y-0 opacity-100 scale-100"
+              : "pointer-events-none -translate-y-3 opacity-0 scale-[0.98]"
+          }`}
+          style={ISLAND_PANEL_STYLE}
+        >
+          <header className="border-b border-[rgba(229,221,210,0.92)] px-4 py-3 md:px-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Typography.Text strong style={{ fontSize: 18, color: "var(--af-text)" }}>
+                    Director Console
+                  </Typography.Text>
+                  <ConsolePill>Agent Monitor</ConsolePill>
+                  <ConsolePill tone="accent">
+                    {executionMode === "yolo" ? "YOLO 自动推进" : "Checkpoint 对齐优先"}
+                  </ConsolePill>
+                </div>
+                <Typography.Paragraph style={{ margin: "6px 0 0", color: "var(--af-muted)", fontSize: 12 }}>
+                  这里看当前局面、缺口和下一步导演动作。Pro 仍负责长期知识、模板和记忆。
+                </Typography.Paragraph>
+              </div>
+
+              <Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setIsOpen(false)}>
+                收起
+              </Button>
+            </div>
+          </header>
+
+          <div
+            className="overflow-y-auto px-4 py-4 md:px-5"
+            style={{ maxHeight: "calc(min(38rem, calc(100dvh - 220px)) - 74px)" }}
+          >
+            <div className="grid gap-3 xl:grid-cols-[1.05fr_1fr_1fr]">
+              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                  <RadarChartOutlined />
+                  <span>Agent Pulse</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <ConsolePill>{workspaceLabel ?? "工作区未初始化"}</ConsolePill>
+                  <ConsolePill>{sessionId ? "会话已连接" : "等待起步"}</ConsolePill>
+                  <ConsolePill>memory:{memoryUser}</ConsolePill>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+                  <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
+                    <span className="block text-[11px] text-[var(--af-muted)]">素材</span>
+                    <strong className="mt-1 block text-base text-[var(--af-text)]">{insights.totalAssets}</strong>
+                  </div>
+                  <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
+                    <span className="block text-[11px] text-[var(--af-muted)]">锚点覆盖</span>
+                    <strong className="mt-1 block text-base text-[var(--af-text)]">
+                      {insights.anchorCoverage}/{REFERENCE_ROLES.length}
+                    </strong>
+                  </div>
+                  <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
+                    <span className="block text-[11px] text-[var(--af-muted)]">图 / 视频</span>
+                    <strong className="mt-1 block text-base text-[var(--af-text)]">
+                      {insights.imageCount}/{insights.videoCount}
+                    </strong>
+                  </div>
+                  <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
+                    <span className="block text-[11px] text-[var(--af-muted)]">Skills / MCP</span>
+                    <strong className="mt-1 block text-base text-[var(--af-text)]">
+                      {capabilitySkills.length}/{capabilityMcps.length}
+                    </strong>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                  <BranchesOutlined />
+                  <span>Current Cue</span>
+                </div>
+                <div className="mt-3">
+                  <Typography.Text strong style={{ fontSize: 17 }}>
+                    {currentCue.title}
+                  </Typography.Text>
+                  <Typography.Paragraph style={{ margin: "10px 0 0", color: "var(--af-muted)", fontSize: 13 }}>
+                    {currentCue.summary}
+                  </Typography.Paragraph>
+                  <div className="mt-2">
+                    <ConsolePill>{currentCue.routeLabel}</ConsolePill>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                  <ThunderboltOutlined />
+                  <span>Gap Radar</span>
+                </div>
+                {gaps.length === 0 ? (
+                  <Typography.Paragraph style={{ margin: "14px 0 0", color: "var(--af-muted)", fontSize: 13 }}>
+                    现场锚点已经比较完整，可以继续推进生成或直接进入粗剪。
+                  </Typography.Paragraph>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    {gaps.slice(0, 4).map((gap, index) => (
+                      <div
+                        key={gap.id}
+                        className={`pt-3 ${index === 0 ? "pt-0" : "border-t border-[rgba(229,221,210,0.68)]"}`}
+                      >
+                        <ConsolePill tone={gap.severity}>{gap.label}</ConsolePill>
+                        <Typography.Paragraph style={{ margin: "8px 0 0", fontSize: 12, color: "var(--af-muted)" }}>
+                          {gap.detail}
+                        </Typography.Paragraph>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+
+            <div className="mt-3 grid gap-3 xl:grid-cols-[1.2fr_1fr]">
+              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                  <RightOutlined />
+                  <span>Action Deck</span>
+                </div>
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  {actionDeck.map((action) => (
+                    <button
+                      key={action.key}
+                      type="button"
+                      className="director-action-button"
+                      onClick={() => runAction(action)}
+                    >
+                      <span className="text-[14px] font-semibold">{action.title}</span>
+                      <span className="text-[12px] text-[var(--af-muted)]">{action.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                  <BookOutlined />
+                  <span>Route Intel</span>
+                </div>
+
+                {isLoadingIntel ? (
+                  <div className="flex min-h-[180px] items-center justify-center">
+                    <Spin size="small" />
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <Typography.Text strong style={{ fontSize: 13 }}>
+                        路径建议
+                      </Typography.Text>
+                      {pathSummary && pathSummary.recommendations.length > 0 ? (
+                        <div className="mt-2 space-y-2">
+                          {pathSummary.recommendations.slice(0, 3).map((item) => (
+                            <div
+                              key={item.pathId}
+                              className="border-l-2 border-[rgba(47,107,95,0.18)] pl-2.5"
+                            >
+                              <div className="flex items-center gap-2">
+                                <ConsolePill>{item.title}</ConsolePill>
+                                <span className="text-[11px] text-[var(--af-muted)]">{item.score.toFixed(1)}</span>
+                              </div>
+                              {item.why[0] && (
+                                <p className="mt-1 text-[12px] text-[var(--af-muted)]">{item.why[0]}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-[12px] text-[var(--af-muted)]">
+                          暂无额外路径偏置，当前主要按现场素材与缺口判断。
+                        </p>
+                      )}
+                    </div>
+
+                    <div>
+                      <Typography.Text strong style={{ fontSize: 13 }}>
+                        长期偏好提醒
+                      </Typography.Text>
+                      {memorySummary && memorySummary.totalPreferenceItems > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {memorySummary.preferredWorkflowPaths.slice(0, 2).map((item) => (
+                            <ConsolePill key={item}>{item}</ConsolePill>
+                          ))}
+                          {memorySummary.preferredEditingHints.slice(0, 2).map((item) => (
+                            <ConsolePill key={item}>{item}</ConsolePill>
+                          ))}
+                          {memorySummary.preferredStyleTokens.slice(0, 3).map((item) => (
+                            <ConsolePill key={item}>{item}</ConsolePill>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-[12px] text-[var(--af-muted)]">
+                          当前记忆较干净，这里主要按本次素材实时判断。
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <BgColorsOutlined className="text-[var(--af-brand)]" />
+                        <Typography.Text strong style={{ fontSize: 13 }}>
+                          Pro 负责长期知识
+                        </Typography.Text>
+                      </div>
+                      <p className="mt-2 text-[12px] text-[var(--af-muted)]">
+                        模板、记忆和深层 Atelier 编排仍在 Pro 里维护，这里只负责当前局面。
+                      </p>
+                      <Button
+                        size="small"
+                        className="mt-2"
+                        onClick={() => runAction({
+                          key: "open_pro_inline",
+                          title: "打开 Pro",
+                          description: "",
+                          kind: "pro",
+                        })}
+                      >
+                        打开 Pro
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </section>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--af-muted)]">
+              <ConsolePill>
+                {workspaceView === "clip" ? <ScissorOutlined /> : <RadarChartOutlined />}
+                <span className="ml-1">{workspaceView === "clip" ? "当前在剪辑台" : "当前在对话导演台"}</span>
+              </ConsolePill>
+              <ConsolePill>上下文 {contextMaterialCount}</ConsolePill>
+              <ConsolePill>风格参考 {styleReferenceCount}</ConsolePill>
+            </div>
+          </div>
+        </section>
       </div>
-
-      <div className="director-console-grid mt-3 grid grid-cols-1 gap-3 xl:grid-cols-4">
-        <div className="director-signal-card">
-          <div className="director-signal-header">
-            <CompassOutlined />
-            <span>运行态</span>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <Tag style={{ margin: 0 }}>图片 {mediaCounts.image}</Tag>
-            <Tag style={{ margin: 0 }}>视频 {mediaCounts.video}</Tag>
-            <Tag style={{ margin: 0 }}>JSON {mediaCounts.json}</Tag>
-            <Tag style={{ margin: 0 }}>上下文 {contextMaterialCount}</Tag>
-            <Tag style={{ margin: 0 }}>风格参考 {styleReferenceCount}</Tag>
-          </div>
-          <div className="mt-3 text-[11px] text-[var(--af-muted)]">
-            分镜策略当前倾向：{summarizeStoryboardDensity(proConfig)}
-          </div>
-        </div>
-
-        <div className="director-signal-card">
-          <div className="director-signal-header">
-            <DeploymentUnitOutlined />
-            <span>路径轨道</span>
-          </div>
-          <div className="mt-2 space-y-1.5 text-[11px] text-[var(--af-text)]">
-            {routeTracks.map((track) => (
-              <div key={track} className="director-line-item">{track}</div>
-            ))}
-          </div>
-        </div>
-
-        <div className="director-signal-card">
-          <div className="director-signal-header">
-            <BgColorsOutlined />
-            <span>素材语义</span>
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {ROLE_META.map((item) => {
-              const count = roleCounts[item.role];
-              if (count === 0) return null;
-              return (
-                <Tag key={item.role} color={item.tone} style={{ margin: 0 }}>
-                  {item.label} {count}
-                </Tag>
-              );
-            })}
-            {ROLE_META.every((item) => roleCounts[item.role] === 0) && (
-              <Tag style={{ margin: 0 }}>尚未建立语义锚点</Tag>
-            )}
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {missingAnchors.map((item) => (
-              <Tag key={item} color="red" style={{ margin: 0 }}>
-                {item}
-              </Tag>
-            ))}
-          </div>
-        </div>
-
-        <div className="director-signal-card">
-          <div className="director-signal-header">
-            <ScissorOutlined />
-            <span>快速编排</span>
-          </div>
-          <div className="mt-2 grid grid-cols-1 gap-2">
-            {quickActions.map((action) => (
-              <button
-                key={action.id}
-                type="button"
-                className="director-action-button"
-                onClick={action.onTrigger ?? undefined}
-                disabled={!action.onTrigger}
-              >
-                <span className="font-medium">{action.label}</span>
-                <span className="text-[10px] text-[var(--af-muted)]">{action.hint}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {(capabilitySkills.length > 0 || capabilityMcps.length > 0) && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[rgba(229,221,210,0.86)] pt-3 text-[11px]">
-          <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-            Runtime Capsules
-          </Typography.Text>
-          {capabilitySkills.slice(0, 4).map((skill) => (
-            <Tag key={`skill-${skill}`} color="green" style={{ margin: 0 }}>{skill}</Tag>
-          ))}
-          {capabilityMcps.slice(0, 4).map((mcp) => (
-            <Tag key={`mcp-${mcp}`} color="blue" style={{ margin: 0 }}>{mcp}</Tag>
-          ))}
-          {(capabilitySkills.length > 4 || capabilityMcps.length > 4) && (
-            <Tag style={{ margin: 0 }}>更多能力在 Pro 中查看</Tag>
-          )}
-        </div>
-      )}
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Button size="small" icon={<BgColorsOutlined />} onClick={onOpenStyle} disabled={!onOpenStyle}>
-          Style
-        </Button>
-        <Button size="small" onClick={onOpenPro} disabled={!onOpenPro}>
-          Pro
-        </Button>
-      </div>
-    </Card>
+    </div>
   );
 }
