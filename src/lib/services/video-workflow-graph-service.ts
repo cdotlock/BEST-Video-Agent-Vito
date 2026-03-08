@@ -73,7 +73,9 @@ function buildReviewRubric(signals: WorkflowGraphSignals): string[] {
   const rubric = [
     "画风是否统一，是否已经有稳定 style_ref 或 style profile",
     "分镜密度是否匹配不确定性，是否需要从 single 升到 2x2/3x3",
+    "动画短片里主体轮廓、姿态和主动作是否一眼可读，而不是信息堆满整张画面",
     "角色、场景、空镜、动作参考是否角色分离而非混杂",
+    "镜头是否只承载一个主戏剧动作 / 主情绪，并保住 screen direction 与空间地理",
     "若目标包含叙事或口播，是否先补对白脚本再生视频",
   ];
   if (signals.wantsMultiClip) {
@@ -93,6 +95,9 @@ function buildReviewRubric(signals: WorkflowGraphSignals): string[] {
   }
   if (signals.enableSelfReview) {
     rubric.push("关键阶段结束后是否需要写回 path review / feedback 到主动记忆");
+  }
+  if (signals.needsDialogue) {
+    rubric.push("对白镜头里是否给口型、停顿与表演留出节奏，而不是让大动作盖过台词");
   }
   return rubric;
 }
@@ -172,7 +177,7 @@ export function buildWorkflowGraphSnapshot(input: {
       predecessors: ["alignment", "style"],
       candidatePaths: activePathIds.filter((pathId) => pathId.startsWith("path.storyboard_density")),
       preferredTools: ["video_mgr__generate_storyboard_grid", "video_mgr__generate_image"],
-      reviewGate: "检查是否需要补镜头、补空镜或提高分镜密度",
+      reviewGate: "检查分镜是否一眼读懂、是否需要补镜头/补空镜，或提高分镜密度",
     },
     {
       id: "role_pack",
@@ -190,7 +195,7 @@ export function buildWorkflowGraphSnapshot(input: {
       predecessors: ["storyboard"],
       candidatePaths: roleCandidatePaths,
       preferredTools: ["video_mgr__generate_image"],
-      reviewGate: "确认 scene_ref / character_ref / empty_shot_ref 是否已语义分离",
+      reviewGate: "确认 scene_ref / character_ref / empty_shot_ref 是否已语义分离，且能稳定后续动画连续性",
     },
     {
       id: "dialogue",
@@ -224,7 +229,7 @@ export function buildWorkflowGraphSnapshot(input: {
         pathId.startsWith("path.image_to_video") || pathId === "path.multi_reference_video",
       ),
       preferredTools: ["video_mgr__generate_video"],
-      reviewGate: "检查是否需要改走 first_last_frame、mixed_refs 或补素材再生成",
+      reviewGate: "检查动作弧线、运镜主轴和角色一致性，必要时改走 first_last_frame、mixed_refs 或补素材再生成",
     },
     {
       id: "rough_cut",
@@ -237,7 +242,7 @@ export function buildWorkflowGraphSnapshot(input: {
       predecessors: ["video_generation"],
       candidatePaths: activePathIds.filter((pathId) => pathId === "path.multi_clip_compose"),
       preferredTools: ["video_mgr__save_clip_plan"],
-      reviewGate: "检查节奏、转场、冗余镜头和最终交付物是否匹配",
+      reviewGate: "检查节奏、转场、冗余镜头、镜头接续和最终交付物是否匹配",
     },
   ];
 

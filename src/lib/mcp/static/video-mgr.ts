@@ -11,7 +11,20 @@ import {
   generateStoryboardGrid,
   saveClipPlan,
 } from "@/lib/services/video-composition-service";
+import {
+  findLatestDialogueScript,
+  saveDialogueScript,
+} from "@/lib/services/video-dialogue-service";
+import {
+  buildDirectorImagePrompt,
+  buildDirectorVideoPrompt,
+  inferReferenceRolesFromVisualRefs,
+  loadVideoDirectorRuntimeContext,
+  mergeDirectorStyleReferenceUrls,
+} from "@/lib/services/video-director-service";
+import { compressDialogueContext } from "@/lib/services/video-prompt-language-service";
 import { getSequenceRuntimeContext } from "@/lib/services/video-workflow-service";
+import { buildDialogueContextText } from "@/lib/video/dialogue-script";
 import { VisualReferenceRoleSchema } from "@/lib/video/reference-roles";
 
 function text(t: string): CallToolResult {
@@ -124,10 +137,9 @@ function resolveVideoStrategy(input: {
 }
 
 function buildRuntimeVideoPrompt(basePrompt: string, dialogueContext: string | undefined): string {
-  const trimmedDialogue = dialogueContext?.trim();
-  if (!trimmedDialogue || trimmedDialogue.length === 0) return basePrompt;
-  const normalized = trimmedDialogue.replace(/\s+/g, " ").slice(0, 1200);
-  return `${basePrompt}\nhidden_dialogue_context=${normalized}`;
+  const compressedDialogue = compressDialogueContext(dialogueContext);
+  if (!compressedDialogue) return basePrompt;
+  return `${basePrompt}\n对白节奏：${compressedDialogue}。`;
 }
 
 interface RuntimeVideoScope {
@@ -275,7 +287,14 @@ const SaveClipPlanParams = z.object({
           url: z.string().url().nullable().optional(),
           inSec: z.number().min(0),
           outSec: z.number().min(0),
-          transition: z.enum(["none", "cut", "fade"]).optional().default("none"),
+          transition: z.enum([
+            "none",
+            "cut",
+            "fade",
+            "dissolve",
+            "wipe_left",
+            "fade_black",
+          ]).optional().default("none"),
           title: z.string().nullable().optional(),
         }),
       ).min(1),
@@ -312,7 +331,7 @@ export const videoMgrMcp: McpProvider = {
       {
         name: "generate_image",
         description:
-          "Generate image(s) from text prompt(s) via FC. Images are automatically persisted to DB on success (both key_resource for version tracking and domain_resources for UI display) — no additional save step needed. Each item requires a unique `key` (session-scoped); re-using an existing key creates a new version. Returns array of {status, imageUrl, key, keyResourceId, version}.",
+          "Generate image(s) from text prompt(s) via FC. The provider automatically enriches runtime prompts for director-grade animated short output (style refs, continuity, role-aware guidance) and persists success to DB (both key_resource for version tracking and domain_resources for UI display). Each item requires a unique `key` (session-scoped); re-using an existing key creates a new version. Returns array of {status, imageUrl, key, keyResourceId, version}.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -369,7 +388,7 @@ export const videoMgrMcp: McpProvider = {
       {
         name: "generate_video",
         description:
-          "Generate/store video tasks with flexible strategies: prompt_only, first_frame, first_last_frame, mixed_refs. On success, writes domain_resources(mediaType=video) with prompt, strategy, refs, and optional generated video URL.",
+          "Generate/store video tasks with flexible strategies: prompt_only, first_frame, first_last_frame, mixed_refs. The provider automatically enriches runtime prompts for animated short continuity (style refs, motion discipline, character consistency, dialogue rhythm). On success, writes domain_resources(mediaType=video) with prompt, strategy, refs, and optional generated video URL.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -432,7 +451,7 @@ export const videoMgrMcp: McpProvider = {
       {
         name: "generate_storyboard_grid",
         description:
-          "Generate storyboard grid images (2x2 or 3x3). Each cell is generated as an image; then a grid-plan JSON resource is persisted for downstream review/composition.",
+          "Generate storyboard grid images (2x2 or 3x3). Each cell is automatically rewritten as a storyboard-first prompt for readable animated-short shot exploration, then a grid-plan JSON resource is persisted for downstream review/composition.",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -493,7 +512,10 @@ export const videoMgrMcp: McpProvider = {
                         url: { type: "string" },
                         inSec: { type: "number" },
                         outSec: { type: "number" },
-                        transition: { type: "string", enum: ["none", "cut", "fade"] },
+                        transition: {
+                          type: "string",
+                          enum: ["none", "cut", "fade", "dissolve", "wipe_left", "fade_black"],
+                        },
                         title: { type: "string" },
                       },
                       required: ["inSec", "outSec"],
@@ -562,29 +584,53 @@ export const videoMgrMcp: McpProvider = {
         }
         const { items } = GenerateImageParams.parse(args);
         const runtimeScope = await resolveRuntimeVideoScope(context);
+        const directorRuntime = runtimeScope
+          ? await loadVideoDirectorRuntimeContext(runtimeScope)
+          : null;
         const normalizedItems = items.map((item) => {
           const mergedReferenceImageUrls = mergeImageReferenceUrls(
             item.referenceImageUrls,
             item.references,
           );
+          const referenceRoles = inferReferenceRolesFromVisualRefs(item.references);
           const resolvedScope = resolveScopeTarget(
             { scopeType: item.scopeType, scopeId: item.scopeId },
             runtimeScope,
           );
+          const runtimePrompt = directorRuntime
+            ? buildDirectorImagePrompt({
+                prompt: item.prompt,
+                category: item.category,
+                title: item.title,
+                focusMode: directorRuntime.focusMode,
+                sequenceContent: directorRuntime.sequenceContent,
+                styleProfile: directorRuntime.activeStyleProfile,
+                defaultStylePreset: directorRuntime.defaultStylePreset,
+                roleAnchors: directorRuntime.roleAnchors,
+                referenceRoles,
+              })
+            : item.prompt;
           return {
             ...item,
             scopeType: resolvedScope.scopeType,
             scopeId: resolvedScope.scopeId,
-            mergedReferenceImageUrls,
+            referenceRoles,
+            runtimePrompt,
+            mergedReferenceImageUrls: directorRuntime
+              ? mergeDirectorStyleReferenceUrls(
+                  mergedReferenceImageUrls,
+                  directorRuntime.styleReferenceUrls,
+                )
+              : mergedReferenceImageUrls,
           };
         });
 
         const results = await Promise.allSettled(
-          normalizedItems.map(({ key, prompt, mergedReferenceImageUrls }) =>
+          normalizedItems.map(({ key, runtimePrompt, mergedReferenceImageUrls }) =>
             keyResourceService.generateImage({
               sessionId,
               key,
-              prompt,
+              prompt: runtimePrompt,
               refUrls: mergedReferenceImageUrls,
             }),
           ),
@@ -623,6 +669,7 @@ export const videoMgrMcp: McpProvider = {
                 data: {
                   key: item.key,
                   prompt: item.prompt,
+                  runtimePrompt: item.runtimePrompt,
                   references: item.references,
                   referenceImageUrls: item.mergedReferenceImageUrls,
                 },
@@ -646,6 +693,9 @@ export const videoMgrMcp: McpProvider = {
       case "generate_video": {
         const { items } = GenerateVideoParams.parse(args);
         const runtimeScope = await resolveRuntimeVideoScope(context);
+        const directorRuntime = runtimeScope
+          ? await loadVideoDirectorRuntimeContext(runtimeScope)
+          : null;
         const vidOutput = await Promise.all(
           items.map(async (item, i) => {
             try {
@@ -658,6 +708,12 @@ export const videoMgrMcp: McpProvider = {
                 item.referenceVideoUrls,
                 item.references,
               );
+              const mergedImageUrls = directorRuntime
+                ? mergeDirectorStyleReferenceUrls(
+                    mergedRefs.imageUrls,
+                    directorRuntime.styleReferenceUrls,
+                  )
+                : mergedRefs.imageUrls;
               const firstFrameUrl = item.firstFrameUrl ?? mergedRefs.firstFrameUrl ?? item.sourceImageUrl ?? null;
               const lastFrameUrl = item.lastFrameUrl ?? mergedRefs.lastFrameUrl ?? null;
               const resolvedStrategy = resolveVideoStrategy({
@@ -667,7 +723,35 @@ export const videoMgrMcp: McpProvider = {
                 lastFrameUrl,
                 referenceVideoUrls: mergedRefs.videoUrls,
               });
-              const runtimePrompt = buildRuntimeVideoPrompt(item.prompt, item.dialogueContext);
+              const referenceRoles = inferReferenceRolesFromVisualRefs(
+                item.references.map((ref) => ({ role: ref.role })),
+              );
+              const persistedDialogue = item.dialogueContext?.trim()
+                ? null
+                : await findLatestDialogueScript(resolvedScope.scopeType, resolvedScope.scopeId);
+              const effectiveDialogueContext = item.dialogueContext?.trim()
+                ? item.dialogueContext.trim()
+                : persistedDialogue?.data
+                  ? buildDialogueContextText(persistedDialogue.data)
+                  : undefined;
+              const directorPrompt = directorRuntime
+                ? buildDirectorVideoPrompt({
+                    prompt: item.prompt,
+                    category: item.category,
+                    title: item.title,
+                    strategy: resolvedStrategy,
+                    dialogueContext: effectiveDialogueContext,
+                    focusMode: directorRuntime.focusMode,
+                    sequenceContent: directorRuntime.sequenceContent,
+                    styleProfile: directorRuntime.activeStyleProfile,
+                    defaultStylePreset: directorRuntime.defaultStylePreset,
+                    roleAnchors: directorRuntime.roleAnchors,
+                    referenceRoles,
+                  })
+                : item.prompt;
+              const runtimePrompt = directorRuntime
+                ? directorPrompt
+                : buildRuntimeVideoPrompt(directorPrompt, effectiveDialogueContext);
               let generatedVideoUrl: string | null = null;
               let pollCount: number | null = null;
               const shouldGenerate = resolvedStrategy !== "prompt_only";
@@ -677,7 +761,7 @@ export const videoMgrMcp: McpProvider = {
                   prompt: runtimePrompt,
                   firstFrameUrl,
                   lastFrameUrl,
-                  referenceImageUrls: mergedRefs.imageUrls,
+                  referenceImageUrls: mergedImageUrls,
                   referenceVideoUrls: mergedRefs.videoUrls,
                 });
                 generatedVideoUrl = generated.videoUrl;
@@ -700,10 +784,10 @@ export const videoMgrMcp: McpProvider = {
                   sourceImageUrl: item.sourceImageUrl ?? null,
                   firstFrameUrl,
                   lastFrameUrl,
-                  referenceImageUrls: mergedRefs.imageUrls,
+                  referenceImageUrls: mergedImageUrls,
                   referenceVideoUrls: mergedRefs.videoUrls,
                   references: item.references,
-                  dialogueContext: item.dialogueContext ?? null,
+                  dialogueContext: effectiveDialogueContext ?? null,
                   generated: generatedVideoUrl != null,
                 },
               });
@@ -743,6 +827,9 @@ export const videoMgrMcp: McpProvider = {
         }
         const { items } = GenerateStoryboardGridParams.parse(args);
         const runtimeScope = await resolveRuntimeVideoScope(context);
+        const directorRuntime = runtimeScope
+          ? await loadVideoDirectorRuntimeContext(runtimeScope)
+          : null;
         const output = await Promise.all(
           items.map(async (item, index) => {
             try {
@@ -759,9 +846,27 @@ export const videoMgrMcp: McpProvider = {
                 scopeType: resolvedScope.scopeType,
                 scopeId: resolvedScope.scopeId,
                 cells: item.cells.map((cell) => ({
-                  prompt: cell.prompt,
+                  prompt: directorRuntime
+                    ? buildDirectorImagePrompt({
+                        prompt: cell.prompt,
+                        category: item.category,
+                        title: cell.title ?? item.title,
+                        roleOverride: "storyboard_ref",
+                        focusMode: directorRuntime.focusMode,
+                        sequenceContent: directorRuntime.sequenceContent,
+                        styleProfile: directorRuntime.activeStyleProfile,
+                        defaultStylePreset: directorRuntime.defaultStylePreset,
+                        roleAnchors: directorRuntime.roleAnchors,
+                        referenceRoles: [],
+                      })
+                    : cell.prompt,
                   title: cell.title ?? null,
-                  referenceImageUrls: cell.referenceImageUrls,
+                  referenceImageUrls: directorRuntime
+                    ? mergeDirectorStyleReferenceUrls(
+                        cell.referenceImageUrls,
+                        directorRuntime.styleReferenceUrls,
+                      )
+                    : cell.referenceImageUrls,
                 })),
               });
               return {
@@ -836,25 +941,21 @@ export const videoMgrMcp: McpProvider = {
                 { scopeType: item.scopeType, scopeId: item.scopeId },
                 runtimeScope,
               );
-              const resourceId = await createResource({
+              const result = await saveDialogueScript({
+                key: item.key,
+                title: item.title ?? item.key,
+                category: item.category,
                 scopeType: resolvedScope.scopeType,
                 scopeId: resolvedScope.scopeId,
-                category: item.category,
-                mediaType: "json",
-                title: item.title ?? item.key,
-                data: {
-                  type: "dialogue_script",
-                  key: item.key,
-                  sceneGoal: item.sceneGoal ?? null,
-                  lines: item.lines,
-                },
+                sceneGoal: item.sceneGoal ?? null,
+                lines: item.lines,
               });
               return {
                 index,
                 status: "ok" as const,
                 key: item.key,
-                resourceId,
-                lineCount: item.lines.length,
+                resourceId: result.resourceId,
+                lineCount: result.lineCount,
               };
             } catch (e) {
               return {

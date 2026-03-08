@@ -141,11 +141,11 @@ curl -X POST http://localhost:8001/api/video/tasks \
 - `checkpointAlignmentRequired`
 - `enableSelfReview`
 
-**因果**：Pro 抽屉配置会作为隐藏上下文注入，影响路径选择与执行策略。
+**因果**：灵动岛展开态中的 `Pro` 配置会作为隐藏上下文注入，影响路径选择与执行策略。
 
 当前前端落地约定：
 
-- Pro 抽屉固定分为 `Knowledge / Templates / Memory / Review / Capabilities`
+- Pro 固定收进灵动岛展开态，并分为 `Knowledge / Templates / Atelier / Memory / Review / Capabilities`
 - `Memory` tab 会读取 `/api/video/memory/recommendations` 与 `/api/video/memory/path-recommendations`
 - `Capabilities` 仅展示已绑定的 MCP / Skill 叠层，不直接暴露源码编辑
 
@@ -232,8 +232,13 @@ curl -X POST http://localhost:8001/api/video/tasks \
    - 生成 cell 图片并持久化网格计划 JSON
 2. `POST /api/video/sequences/{sequenceId}/clip-plan`：
    - 最简输入：片段列表（顺序/in/out/transition）
+   - `transition` 当前支持：`none | cut | fade | dissolve | wipe_left | fade_black`
    - 扩展输入：`saveMode=manual|autosave` + `editorState`
    - 保存 `timeline_v2` clip plan 到 `domain_resources`（mediaType=json）
+3. Clip Studio 前端进入编辑态时：
+   - 会按当前视频候选资源的顺序初始化时间线主舞台
+   - 可一键触发 `AI 自动粗剪`，自动生成粗剪序列并落入时间线（用户仍可继续手调后保存）
+   - 右侧 Asset Atlas 继续独立显示，不在剪辑器内部复制左侧资产栏
 
 `editorState` 当前包含：
 
@@ -277,19 +282,32 @@ curl -X POST http://localhost:8001/api/video/tasks \
 
 **因果**：高级用户的粗剪行为会反过来影响后续路径推荐和 Prompt Compiler 的 `user_memory` 组装。
 
-### 台词脚本资产
+### 对白脚本资产
 
 MCP `video_mgr` 新增 `video_mgr__save_dialogue_script`：
 
 - 输入：结构化台词条目（角色、台词、情绪、时长建议）
 - 输出：`domain_resources` 中 `mediaType=json`、`data.type=dialogue_script` 的持久化资源
 
+前端与 REST 链路：
+
+1. `POST /api/video/sequences/{sequenceId}/dialogue-script`
+   - 输入：`projectId + sequenceKey + title? + force?`
+   - 默认行为：若当前 sequence 已存在 `dialogue_script_current`，直接复用
+   - `force=true` 时重新基于剧情与当前素材摘要生成一份新草稿
+2. 项目页选中 sequence 后：
+   - 若当前工作区存在剧情线索且还没有 `dialogue_ref`
+   - 前端会自动调用一次上述接口，补一份默认对白脚本 JSON
+3. 灵动岛中的“生成台词稿”动作与自动补全共用同一接口，只是显式触发时会走 `force=true`
+
 `video_mgr__generate_video` 同时支持可选 `dialogueContext` 字段：
 
 - tool 内部会把该字段合并到 runtime prompt（`hidden_dialogue_context=...`）
+- 若调用方未显式传 `dialogueContext`，tool 会先 recall 当前 scope 下最近一份持久化对白脚本，再自动组装隐藏运行时对白上下文
+- 生成结果会把本次使用的 `dialogueContext` 快照一并写回视频资源 `data`
 - 用户可见 prompt 保持创作描述层，不暴露隐藏注入细节
 
-**因果**：后续视频任务上下文会自动吸收台词资源；在需要口播/唇形时可稳定把台词语义并入生成提示词。
+**因果**：对白脚本是独立可确认的 JSON 资产，但视频生成阶段会自动 recall 并注入运行时 prompt；因此用户可以单独确认台词，同时不需要每次手工把对白再粘回生成提示词。
 
 ### 参考角色化（图/视频混合参考）
 
@@ -301,9 +319,12 @@ MCP `video_mgr` 新增 `video_mgr__save_dialogue_script`：
    - 兼容字段：`referenceImageUrls[] + referenceVideoUrls[]`
    - 角色化字段：`references[]`（含 `mediaType=image|video`）
 3. 服务端会合并并去重参考链接，将快照写入 `domain_resources.data`，用于后续 review/复用。
-4. `video_mgr` 各落库工具支持 scope 自动推断：若缺失 `scopeType/scopeId`，会根据 `user=video:{projectId}:{sequenceKey}` 自动回填当前 sequence scope；若误传 `scopeId=sequenceKey`，会自动纠正为真实 `sequenceId`。
+4. 若当前任务处于视频工作台上下文，`video_mgr__generate_image / generate_video / generate_storyboard_grid` 还会自动注入：
+   - 动画短片导演级 runtime prompt（单镜头/单动作主线、分镜可读性、角色一致性、连续性锚点）
+   - 当前 sequence 的 style refs / active style profile references（自动并入 image refs）
+5. `video_mgr` 各落库工具支持 scope 自动推断：若缺失 `scopeType/scopeId`，会根据 `user=video:{projectId}:{sequenceKey}` 自动回填当前 sequence scope；若误传 `scopeId=sequenceKey`，会自动纠正为真实 `sequenceId`。
 
-**因果**：同一条生成记录既保留历史兼容字段，也保留角色语义；后续 agent 可基于角色语义重组 prompt，而不是把参考素材混为一类。
+**因果**：同一条生成记录既保留历史兼容字段，也保留角色语义；同时 provider 会在最终执行前自动补齐导演级约束和 style refs，降低“LLM 漏拼 prompt”对最终效果的伤害。
 
 ### domain_resources.data 结构升级（v2 envelope）
 
@@ -328,7 +349,7 @@ MCP `video_mgr` 新增 `video_mgr__save_dialogue_script`：
    - 同时返回 `preferredEditingHints / preferredCameraHints / preferredModelIds / rejectedWorkflowPaths`
 2. `POST /api/video/memory/optimize-prompt`：
    - 输入 `memoryUser + prompt (+ mode)`
-   - 用长期记忆自动优化 prompt，并默认记录 `prompt_optimized` 事件
+   - 用长期记忆自动优化 prompt，并补入 image/video 的导演约束，再默认记录 `prompt_optimized` 事件
 3. `GET /api/video/memory/path-recommendations`：
    - 输入 `memoryUser` + 可选目标信息（`goal/storyboardDensity/hasImageReference/hasReferenceVideo/hasFirstFrameReference/hasLastFrameReference/wantsMultiClip/prefersCharacterPriority/prefersEmptyShotPriority`）
    - 返回 Top 路径推荐与原因

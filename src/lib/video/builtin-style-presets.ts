@@ -9,6 +9,23 @@ export interface BuiltinStylePreset {
 
 const PRESETS: ReadonlyArray<BuiltinStylePreset> = [
   {
+    id: "animated-short-cinematic",
+    name: "动画短片电影感",
+    description: "面向动画短片的默认导演级基线，强调镜头设计、角色一致性与背景层次。",
+    styleTokens: [
+      "animated short film",
+      "cinematic composition",
+      "readable silhouette",
+      "layered background",
+      "controlled lighting",
+      "story-driven frame",
+    ],
+    positivePrompt:
+      "animated short film frame, cinematic staging, readable silhouette, layered foreground midground background, consistent character design, controlled lighting, story-driven composition",
+    negativePrompt:
+      "product ad minimalism, noisy clutter, broken anatomy, inconsistent character model, extra limbs, chaotic background detail",
+  },
+  {
     id: "product-white-minimal",
     name: "产品白色极简",
     description: "高端产品展示，留白充足，软光影。",
@@ -211,10 +228,11 @@ const PRESETS: ReadonlyArray<BuiltinStylePreset> = [
 ];
 
 const PRESET_BY_ID = new Map<string, BuiltinStylePreset>(PRESETS.map((preset) => [preset.id, preset]));
-const DEFAULT_PRESET_ID = "product-white-minimal";
+const DEFAULT_PRESET_ID = "animated-short-cinematic";
 
 const KEYWORD_RULES: ReadonlyArray<{ presetId: string; keywords: string[] }> = [
   { presetId: "product-white-minimal", keywords: ["产品", "product", "极简", "minimal", "白色", "white"] },
+  { presetId: "animated-short-cinematic", keywords: ["动画", "animated", "短片", "short film", "叙事", "剧情", "分镜", "storyboard"] },
   { presetId: "anime-cel", keywords: ["二次元", "anime", "漫画", "cel"] },
   { presetId: "ink-wash", keywords: ["水墨", "国风", "ink"] },
   { presetId: "watercolor-soft", keywords: ["水彩", "watercolor"] },

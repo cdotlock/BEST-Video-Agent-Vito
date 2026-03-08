@@ -2,6 +2,10 @@ import { z } from "zod";
 import { bizPool } from "@/lib/biz-db";
 import { resolveTable, GLOBAL_USER } from "@/lib/biz-db-namespace";
 import { ensureVideoSchema } from "@/lib/video/schema";
+import {
+  compactPromptLine,
+  truncatePromptText,
+} from "@/lib/services/video-prompt-language-service";
 
 const MEMORY_EVENTS_TABLE = "video_memory_events";
 const MEMORY_PREFS_TABLE = "video_memory_preferences";
@@ -564,41 +568,59 @@ export async function optimizePromptWithMemory(
   const lines: string[] = [originalPrompt];
   const appliedHints: string[] = [];
 
+  lines.push(compactPromptLine({
+    label: "导演约束",
+    values: [
+      input.mode === "image"
+        ? "单帧叙事清晰；主体轮廓可读；前中后景分层；背景噪声不要压过表演"
+        : "单镜头单主动作；镜头运动最多一条主轴；角色设计与空间关系保持连续稳定",
+    ],
+    maxLength: 180,
+  }));
+  appliedHints.push(input.mode === "image" ? "image_director_constraint" : "video_director_constraint");
+
   const styleTokens = recommendations.preferredStyleTokens.slice(0, 8);
   if (styleTokens.length > 0) {
-    lines.push(`风格关键词: ${styleTokens.join(", ")}`);
+    lines.push(compactPromptLine({
+      label: "风格锚点",
+      values: [styleTokens.join(", ")],
+      maxLength: 180,
+    }));
     appliedHints.push("style_tokens");
   }
-  if (recommendations.preferredWorkflowPaths.length > 0) {
-    lines.push(`推荐流程路径: ${recommendations.preferredWorkflowPaths.slice(0, 3).join(", ")}`);
-    appliedHints.push("workflow_path");
-  }
-  if (recommendations.preferredEditingHints.length > 0) {
-    lines.push(`剪辑偏好: ${recommendations.preferredEditingHints.slice(0, 3).join(", ")}`);
+  if (input.mode === "video" && recommendations.preferredEditingHints.length > 0) {
+    lines.push(compactPromptLine({
+      label: "剪辑要求",
+      values: recommendations.preferredEditingHints.slice(0, 3),
+      maxLength: 160,
+    }));
     appliedHints.push("editing_hint");
   }
   if (recommendations.preferredCameraHints.length > 0) {
-    lines.push(`镜头语言: ${recommendations.preferredCameraHints.slice(0, 3).join(", ")}`);
+    lines.push(compactPromptLine({
+      label: "镜头语言",
+      values: recommendations.preferredCameraHints.slice(0, 3),
+      maxLength: 160,
+    }));
     appliedHints.push("camera_hint");
-  }
-  if (recommendations.preferredModelIds.length > 0) {
-    lines.push(`模型偏好: ${recommendations.preferredModelIds.slice(0, 2).join(", ")}`);
-    appliedHints.push("model_id");
   }
 
   if (hasText(recommendations.positivePromptHint)) {
-    lines.push(`正向约束: ${recommendations.positivePromptHint.trim()}`);
+    lines.push(compactPromptLine({
+      label: "风格质感",
+      values: [truncatePromptText(recommendations.positivePromptHint.trim(), 180)],
+      maxLength: 190,
+    }));
     appliedHints.push("positive_prompt_hint");
   }
 
-  if (hasText(recommendations.queryHint)) {
-    lines.push(`历史偏好: ${recommendations.queryHint.trim()}`);
-    appliedHints.push("query_hint");
-  }
-
-  if (input.mode === "video") {
-    lines.push("视频约束: 镜头运动连贯，主体动作稳定，时序自然。");
-    appliedHints.push("video_continuity");
+  if (hasText(recommendations.negativePromptHint)) {
+    lines.push(compactPromptLine({
+      label: "稳定约束",
+      values: [truncatePromptText(recommendations.negativePromptHint.trim(), 180)],
+      maxLength: 190,
+    }));
+    appliedHints.push("negative_prompt_hint");
   }
 
   const optimizedPrompt = lines.join("\n");

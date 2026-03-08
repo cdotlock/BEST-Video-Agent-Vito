@@ -1,0 +1,255 @@
+{
+  "mode": "prompt_only",
+  "case_id": "animation-short-diverse",
+  "platform_or_system": "BEST Video Agent prompt stack",
+  "protocol": {
+    "level": "quick_check",
+    "blind": false,
+    "pairwise_used": false,
+    "order_swapped": false,
+    "panel_size": 1,
+    "aggregation": "single_judge",
+    "deviations": [
+      "single-judge fallback",
+      "non-blind internal evaluation",
+      "prompt-only artifacts only",
+      "6-case quick_check only"
+    ]
+  },
+  "verdict": {
+    "score_100": 77,
+    "rating": "strong_pro",
+    "confidence": 0.71,
+    "evidence_sufficiency": "medium",
+    "human_review_recommended": true
+  },
+  "gates": {
+    "minimum_viable": true,
+    "clear_subject": true,
+    "clear_shot_intent": true,
+    "clear_camera_or_static_rule": true,
+    "clear_continuity_or_reference_strategy": true,
+    "no_major_internal_conflict": true
+  },
+  "dimension_scores": [
+    {
+      "dimension": "goal_fidelity",
+      "score_5": 3.9,
+      "weight": 12,
+      "evidence": [
+        "6 个 case 的核心任务都能在最终 prompt 中被直接看见",
+        "系统能保住 `static shot`、单动作链、以及 reference-driven shot 的基本执行语法"
+      ],
+      "inference": [
+        "系统对导演型 brief 的理解仍强于精确控制型 brief"
+      ]
+    },
+    {
+      "dimension": "shot_intent",
+      "score_5": 3.5,
+      "weight": 12,
+      "evidence": [
+        "每个 prompt 都有明确的 `镜头意图` 行",
+        "`three_lanterns_crossing` 被正确拉向过桥/气氛用途而不是乱加动作"
+      ],
+      "inference": [
+        "`door_chain_pause` 与 `roof_signal_roles` 仍被收敛成偏泛的 performance/reaction，而不是更精确的 causal or dual-role intent"
+      ]
+    },
+    {
+      "dimension": "camera_motion_design",
+      "score_5": 3.7,
+      "weight": 12,
+      "evidence": [
+        "`archway_patrol_cross` 正确保住了 `static shot`",
+        "各 case 的镜头运动都没有出现明显互相打架"
+      ],
+      "inference": [
+        "为了保下限，系统对复杂控制 case 的默认运镜仍偏保守"
+      ]
+    },
+    {
+      "dimension": "temporal_progression",
+      "score_5": 3.8,
+      "weight": 8,
+      "evidence": [
+        "所有 prompt 都有 `节奏推进` 行",
+        "`blue_coat_red_scarf_key` 与 `door_chain_pause` 至少保住了动作先后顺序"
+      ],
+      "inference": [
+        "物理细节和双主体分工仍缺少更锋利的中间态控制"
+      ]
+    },
+    {
+      "dimension": "continuity_reference_control",
+      "score_5": 3.5,
+      "weight": 12,
+      "evidence": [
+        "reference roles 分工仍然清楚",
+        "`mixed_refs` case 会把文字预算留给动作和运镜"
+      ],
+      "inference": [
+        "`roof_signal_roles` 的连续性行只保留了第一角色，说明 motion-first continuity 还不适合双主体 case"
+      ]
+    },
+    {
+      "dimension": "style_stability_control",
+      "score_5": 4.1,
+      "weight": 8,
+      "evidence": [
+        "风格锚点、风格质感、稳定约束三层结构保持稳定",
+        "各 case 的风格语言没有明显泄漏成 workflow/meta 指令"
+      ],
+      "inference": [
+        "风格稳定仍是当前系统最稳的一层"
+      ]
+    },
+    {
+      "dimension": "editorial_value",
+      "score_5": 3.5,
+      "weight": 8,
+      "evidence": [
+        "`three_lanterns_crossing` 和 `archway_patrol_cross` 仍具备明显 cut value",
+        "动作类 case 至少能形成单镜头落点"
+      ],
+      "inference": [
+        "部分 stress case 更像控制测试，不完全像最有成片价值的镜头设计"
+      ]
+    },
+    {
+      "dimension": "execution_precision",
+      "score_5": 3.8,
+      "weight": 8,
+      "evidence": [
+        "prompt 仍保持短块结构，没有 planning leak",
+        "reference-driven case 没有明显重复描述全部视觉信息"
+      ],
+      "inference": [
+        "当 case 需要精确数量、物理或双角色绑定时，现有语法仍不够锋利"
+      ]
+    }
+  ],
+  "overlay_scores": [
+    {
+      "dimension": "attribute_binding",
+      "score_5": 3.7,
+      "weight": 2.86,
+      "evidence": [
+        "`blue_coat_red_scarf_key` 明确写出了蓝雨衣、红围巾、黄铜钥匙和左手"
+      ],
+      "inference": [
+        "系统能表达属性，但还没有专门的 binding guard"
+      ]
+    },
+    {
+      "dimension": "spatial_relation_control",
+      "score_5": 3.3,
+      "weight": 2.86,
+      "evidence": [
+        "`archway_patrol_cross` 明确写出左侧阴影和前景右向左巡过"
+      ],
+      "inference": [
+        "`roof_signal_roles` 对双主体空间关系的压缩仍不够稳"
+      ]
+    },
+    {
+      "dimension": "numeracy_control",
+      "score_5": 3.2,
+      "weight": 2.86,
+      "evidence": [
+        "`three_lanterns_crossing` 明确写出了 `恰好三只纸灯笼`"
+      ],
+      "inference": [
+        "除了原句描述外，没有额外数量稳定 guard"
+      ]
+    },
+    {
+      "dimension": "motion_binding",
+      "score_5": 3.1,
+      "weight": 2.86,
+      "evidence": [
+        "`three_lanterns_crossing` 和 `puddle_step_reflection` 都保住了单一主动作"
+      ],
+      "inference": [
+        "物理微动作的受力和落点仍偏泛"
+      ]
+    },
+    {
+      "dimension": "action_role_binding",
+      "score_5": 2.8,
+      "weight": 2.86,
+      "evidence": [
+        "`archway_patrol_cross` 还能维持主角静止、守卫移动",
+        "`roof_signal_roles` 原始 prompt 写清了点火者和望风者"
+      ],
+      "inference": [
+        "系统对双角色 case 的连续性压缩会丢失第二角色，导致角色职责绑定不够稳"
+      ]
+    },
+    {
+      "dimension": "object_interaction_causality",
+      "score_5": 3.2,
+      "weight": 2.86,
+      "evidence": [
+        "`blue_coat_red_scarf_key` 与 `door_chain_pause` 都保留了动作顺序"
+      ],
+      "inference": [
+        "门链这类 causal micro action 仍容易被系统往 reaction/pause 理解上拉"
+      ]
+    },
+    {
+      "dimension": "physical_plausibility",
+      "score_5": 2.7,
+      "weight": 2.86,
+      "evidence": [
+        "`puddle_step_reflection` 至少写出了小水花、倒影破碎后稳定"
+      ],
+      "inference": [
+        "系统还没有更明确地保护重量感、反射时序和 splash scale"
+      ]
+    }
+  ],
+  "top_strengths": [
+    "系统仍然有稳定的导演语法，复杂 stress case 也没有退化成无结构堆词",
+    "静镜、单动作链和 reference-driven prompt budget control 依然可靠",
+    "属性、空间和数量要求至少能被写进最终执行 prompt，而不是在编译阶段丢失"
+  ],
+  "top_failures": [
+    {
+      "code": "action_role_swap",
+      "why_it_matters": "双主体动作镜头如果角色职责不稳，会直接击穿可控性上限。",
+      "evidence": [
+        "`roof_signal_roles` 的 continuity 压缩后只保留了第一角色和第一动作"
+      ]
+    },
+    {
+      "code": "physics_break",
+      "why_it_matters": "物理微动作是区分专业 prompt 和普通 prompt 的关键 stress 项。",
+      "evidence": [
+        "`puddle_step_reflection` 虽写了倒影与水花，但缺少更硬的物理边界语言"
+      ]
+    },
+    {
+      "code": "purpose_blur",
+      "why_it_matters": "当 causal 或 dual-role case 被泛化成 performance，控制精度会下降。",
+      "evidence": [
+        "`door_chain_pause` 与 `roof_signal_roles` 的镜头意图仍偏泛"
+      ]
+    }
+  ],
+  "uncertainty_flags": [
+    "single_judge",
+    "prompt_only_ceiling",
+    "non_blind_run",
+    "no_human_calibration"
+  ],
+  "recommended_next_move": {
+    "priority": "high",
+    "action": "优先补双角色 continuity 压缩、物理微动作语言和 causal micro action 的意图分类，不要继续泛化成统一 performance 语法。",
+    "reason": "diversity stress 的主要短板已经不是风格稳定，而是精确控制和上限打开。"
+  },
+  "judge_notes": [
+    "这是 prompt-level judgment，不代表真实视频渲染质量已达到同等分数。",
+    "这组 case 主要用于拉出 compositional、physics 和 dual-subject 控制短板，因此分数天然会低于 core dramaturgy pack。"
+  ]
+}
