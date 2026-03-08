@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DragEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
   Alert,
@@ -16,7 +18,6 @@ import {
   Empty,
   Input,
   InputNumber,
-  Segmented,
   Select,
   Slider,
   Space,
@@ -31,6 +32,7 @@ import {
   RedoOutlined,
   SaveOutlined,
   ScissorOutlined,
+  ThunderboltOutlined,
   UndoOutlined,
 } from "@ant-design/icons";
 import {
@@ -51,8 +53,16 @@ import { z } from "zod";
 import type { DomainResources, QueuedClipResource, VideoContext } from "../types";
 import { inferReferenceRole } from "@/lib/video/reference-roles";
 import { fetchJson } from "@/app/components/client-utils";
+import { CLIP_ATLAS_DRAG_MIME, parseClipAtlasDragPayload } from "@/lib/video/clip-drag";
 
-const ClipTransitionSchema = z.enum(["none", "cut", "fade"]);
+const ClipTransitionSchema = z.enum([
+  "none",
+  "cut",
+  "fade",
+  "dissolve",
+  "wipe_left",
+  "fade_black",
+]);
 const MonitorModeSchema = z.enum(["source", "program"]);
 
 const ClipDraftSchema = z.object({
@@ -109,7 +119,6 @@ const ClipPlanResourceSchema = z.object({
 }).passthrough();
 
 type ClipTransition = z.infer<typeof ClipTransitionSchema>;
-type MonitorMode = z.infer<typeof MonitorModeSchema>;
 type ClipEditorDocument = z.infer<typeof ClipEditorDocumentSchema>;
 type ClipDraft = ClipEditorDocument["clips"][number];
 
@@ -127,17 +136,32 @@ interface EditorStateContainer {
   bootstrapped: boolean;
 }
 
+interface TimelineClipSegment {
+  clip: ClipDraft;
+  index: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+}
+
 interface SortableClipBlockProps {
   clip: ClipDraft;
   index: number;
+  timelineStartSec: number;
+  timelineEndSec: number;
   width: number;
   active: boolean;
   playing: boolean;
-  snapEnabled: boolean;
-  snapStepSec: number;
+  compact: boolean;
   onSelect: (id: string) => void;
-  onTrim: (id: string, range: [number, number]) => void;
   onDelete: (id: string) => void;
+}
+
+interface ClipFramePreviewProps {
+  url: string | null;
+  inSec: number;
+  title: string;
+  compact: boolean;
 }
 
 export interface ClipComposerProps {
@@ -152,11 +176,70 @@ export interface ClipComposerProps {
 }
 
 const DEFAULT_PLAN_NAME = "clip_plan_current";
-const DEFAULT_TIMELINE_ZOOM = 20;
+const DEFAULT_TIMELINE_ZOOM = 16;
 const DEFAULT_SNAP_STEP = 0.25;
 const MAX_HISTORY = 40;
 const AUTOSAVE_DELAY_MS = 1200;
 const LOCAL_DRAFT_PREFIX = "agentForge.video.clipStudio";
+const ROUGH_CUT_TRANSITION_PRESETS: ClipTransition[] = [
+  "cut",
+  "dissolve",
+  "wipe_left",
+  "fade",
+  "fade_black",
+  "cut",
+];
+
+function clipDurationSec(clip: ClipDraft): number {
+  return Math.max(0, clip.outSec - clip.inSec);
+}
+
+function buildTimelineSegments(clips: ClipDraft[]): TimelineClipSegment[] {
+  let cursor = 0;
+  return clips.map((clip, index) => {
+    const durationSec = clipDurationSec(clip);
+    const segment: TimelineClipSegment = {
+      clip,
+      index,
+      startSec: cursor,
+      endSec: cursor + durationSec,
+      durationSec,
+    };
+    cursor += durationSec;
+    return segment;
+  });
+}
+
+function findTimelineSegmentAt(
+  segments: TimelineClipSegment[],
+  playheadSec: number,
+): TimelineClipSegment | null {
+  if (segments.length === 0) return null;
+  for (const segment of segments) {
+    if (playheadSec < segment.endSec) return segment;
+  }
+  return segments[segments.length - 1] ?? null;
+}
+
+function findInsertIndexAtPlayhead(
+  segments: TimelineClipSegment[],
+  playheadSec: number,
+): number {
+  const segment = findTimelineSegmentAt(segments, playheadSec);
+  if (!segment) return 0;
+  const mid = segment.startSec + segment.durationSec / 2;
+  return playheadSec < mid ? segment.index : segment.index + 1;
+}
+
+function timelineStartAtIndex(clips: ClipDraft[], index: number): number {
+  let total = 0;
+  for (let i = 0; i < index; i += 1) {
+    const clip = clips[i];
+    if (!clip) continue;
+    total += clipDurationSec(clip);
+  }
+  return total;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -237,6 +320,49 @@ function buildStarterDocument(videoItems: SourceVideoItem[]): ClipEditorDocument
   };
 }
 
+function transitionLabel(transition: ClipTransition): string {
+  switch (transition) {
+    case "none":
+      return "None";
+    case "cut":
+      return "Cut";
+    case "fade":
+      return "Fade";
+    case "dissolve":
+      return "Dissolve";
+    case "wipe_left":
+      return "Wipe Left";
+    case "fade_black":
+      return "Fade Black";
+    default:
+      return transition;
+  }
+}
+
+function inferAutoRoughCutDurationSec(source: SourceVideoItem, index: number): number {
+  const text = `${source.title} ${source.category}`.toLowerCase();
+  if (text.includes("close") || text.includes("特写")) return 2.2;
+  if (
+    text.includes("empty") ||
+    text.includes("establish") ||
+    text.includes("wide") ||
+    text.includes("空镜") ||
+    text.includes("全景")
+  ) {
+    return 4.2;
+  }
+  if (
+    text.includes("motion") ||
+    text.includes("action") ||
+    text.includes("追") ||
+    text.includes("运动")
+  ) {
+    return 1.8;
+  }
+  const defaults = [3.8, 3.2, 2.8, 2.4, 2.2, 2.6];
+  return defaults[index % defaults.length] ?? 2.8;
+}
+
 function createClipFromSource(
   source: SourceVideoItem,
   index: number,
@@ -258,13 +384,15 @@ function deriveEditingHints(document: ClipEditorDocument): string[] {
   if (document.clips.length === 0) return [];
   const durations = document.clips.map((clip) => Math.max(0, clip.outSec - clip.inSec));
   const averageDuration = durations.reduce((sum, duration) => sum + duration, 0) / durations.length;
-  const fadeCount = document.clips.filter((clip) => clip.transition === "fade").length;
+  const softTransitionCount = document.clips.filter((clip) => (
+    clip.transition === "fade" || clip.transition === "dissolve" || clip.transition === "fade_black"
+  )).length;
   const cutCount = document.clips.filter((clip) => clip.transition === "cut").length;
   const hints: string[] = [];
 
   if (averageDuration <= 2.4) hints.push("快切节奏");
   if (averageDuration >= 4.8) hints.push("长镜停留");
-  if (fadeCount >= 2) hints.push("偏爱溶解转场");
+  if (softTransitionCount >= 2) hints.push("偏爱柔和转场");
   if (cutCount >= Math.max(2, Math.ceil(document.clips.length * 0.6))) hints.push("偏爱硬切推进");
   if (document.clips.length >= 4) hints.push("多候选粗剪");
 
@@ -327,7 +455,9 @@ function buildMemoryNote(document: ClipEditorDocument, resources: DomainResource
   return [
     `clips=${document.clips.length}`,
     `duration=${duration.toFixed(2)}s`,
-    `fade=${document.clips.filter((clip) => clip.transition === "fade").length}`,
+    `soft_transition=${document.clips.filter((clip) => (
+      clip.transition === "fade" || clip.transition === "dissolve" || clip.transition === "fade_black"
+    )).length}`,
     `cut=${document.clips.filter((clip) => clip.transition === "cut").length}`,
     `roles=${dedupeHints(roleHints).join(",") || "none"}`,
   ].join(" | ");
@@ -368,16 +498,89 @@ function buildDocumentFromClipPlan(
   };
 }
 
+function ClipFramePreview({
+  url,
+  inSec,
+  title,
+  compact,
+}: ClipFramePreviewProps) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !url) return;
+
+    const pauseVideo = () => {
+      video.pause();
+    };
+
+    const seekPreviewFrame = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const desired = Math.max(inSec, 0.02);
+      const upperBound = duration > 0 ? Math.max(0, duration - 0.04) : desired;
+      const target = clamp(desired, 0, upperBound);
+      if (Math.abs(video.currentTime - target) > 0.03) {
+        try {
+          video.currentTime = target;
+        } catch {
+          // ignore seek rejections from unsupported streams
+        }
+      }
+    };
+
+    video.addEventListener("loadedmetadata", seekPreviewFrame);
+    video.addEventListener("loadeddata", pauseVideo);
+    video.addEventListener("seeked", pauseVideo);
+
+    if (video.readyState >= 1) {
+      seekPreviewFrame();
+    }
+
+    return () => {
+      video.removeEventListener("loadedmetadata", seekPreviewFrame);
+      video.removeEventListener("loadeddata", pauseVideo);
+      video.removeEventListener("seeked", pauseVideo);
+    };
+  }, [inSec, url]);
+
+  if (!url) {
+    return (
+      <div
+        className={`flex w-full items-center justify-center rounded-[10px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[10px] text-[var(--af-muted)] ${
+          compact ? "h-8" : "h-12"
+        }`}
+      >
+        无预览
+      </div>
+    );
+  }
+
+  return (
+    <div className={`overflow-hidden rounded-[10px] border border-[rgba(229,221,210,0.9)] ${compact ? "h-8" : "h-12"}`}>
+      <video
+        ref={videoRef}
+        src={url}
+        muted
+        playsInline
+        preload="auto"
+        tabIndex={-1}
+        className="h-full w-full bg-black object-cover"
+        aria-label={`${title} 首帧预览`}
+      />
+    </div>
+  );
+}
+
 function SortableClipBlock({
   clip,
   index,
+  timelineStartSec,
+  timelineEndSec,
   width,
   active,
   playing,
-  snapEnabled,
-  snapStepSec,
+  compact,
   onSelect,
-  onTrim,
   onDelete,
 }: SortableClipBlockProps) {
   const {
@@ -396,17 +599,11 @@ function SortableClipBlock({
     transition,
     opacity: isDragging ? 0.82 : 1,
   };
-  const maxDuration = Math.max(
-    clip.sourceDurationSec ?? 0,
-    clip.outSec + 4,
-    6,
-  );
-
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`rounded-[20px] border p-3 shadow-sm transition ${
+      className={`rounded-[14px] border px-2 py-1.5 shadow-sm transition ${
         active
           ? "border-[var(--af-brand)] bg-[rgba(255,253,249,0.98)]"
           : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.9)]"
@@ -421,13 +618,24 @@ function SortableClipBlock({
       role="button"
       tabIndex={0}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="mb-2">
+        <ClipFramePreview
+          url={clip.url}
+          inSec={clip.inSec}
+          title={clip.title}
+          compact={compact}
+        />
+      </div>
+      <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate text-[12px] font-medium text-[var(--af-text)]">
+          <div className="truncate text-[11px] font-medium text-[var(--af-text)]">
             {index + 1}. {clip.title}
           </div>
-          <div className="mt-1 text-[10px] text-[var(--af-muted)]">
-            {clip.transition} · {(clip.outSec - clip.inSec).toFixed(2)}s
+          <div className="mt-0.5 text-[10px] text-[var(--af-muted)]">
+            {transitionLabel(clip.transition)} · {(clip.outSec - clip.inSec).toFixed(2)}s
+          </div>
+          <div className="text-[9px] text-[var(--af-muted)]">
+            TL {timelineStartSec.toFixed(2)}s - {timelineEndSec.toFixed(2)}s
           </div>
         </div>
         <div className="flex items-center gap-1">
@@ -453,22 +661,7 @@ function SortableClipBlock({
           />
         </div>
       </div>
-      <div className="mt-3">
-        <Slider
-          range
-          min={0}
-          max={Number(maxDuration.toFixed(3))}
-          step={snapEnabled ? snapStepSec : 0.1}
-          value={[clip.inSec, clip.outSec]}
-          onChange={(value) => {
-            if (!Array.isArray(value) || value.length !== 2) return;
-            const [nextIn, nextOut] = value;
-            if (typeof nextIn !== "number" || typeof nextOut !== "number") return;
-            onTrim(clip.id, [nextIn, nextOut]);
-          }}
-        />
-      </div>
-      <div className="mt-1 flex items-center justify-between text-[10px] text-[var(--af-muted)]">
+      <div className="mt-1 flex items-center justify-between text-[9px] text-[var(--af-muted)]">
         <span>{clip.inSec.toFixed(2)}s</span>
         <span>{clip.outSec.toFixed(2)}s</span>
       </div>
@@ -487,8 +680,8 @@ export function ClipComposer({
   onSaved,
 }: ClipComposerProps) {
   const { message } = App.useApp();
-  const sourceVideoRef = useRef<HTMLVideoElement | null>(null);
   const programVideoRef = useRef<HTMLVideoElement | null>(null);
+  const timelineViewportRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const programAdvancingRef = useRef(false);
   const lastPersistedSnapshotRef = useRef("");
@@ -499,6 +692,8 @@ export function ClipComposer({
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [isProgramPlaying, setIsProgramPlaying] = useState(false);
   const [programPlaybackIndex, setProgramPlaybackIndex] = useState<number | null>(null);
+  const [timelinePlayheadSec, setTimelinePlayheadSec] = useState(0);
+  const [isTimelineDragOver, setIsTimelineDragOver] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -518,6 +713,23 @@ export function ClipComposer({
           category: group.category,
         })),
     );
+  }, [resources]);
+
+  const videoRoleMap = useMemo(() => {
+    if (!resources) return new Map<string, string | null>();
+    const entries = resources.categories
+      .flatMap((group) => group.items)
+      .filter((item) => item.mediaType === "video")
+      .map((item) => [
+        item.id,
+        inferReferenceRole({
+          category: item.category,
+          mediaType: item.mediaType,
+          title: item.title,
+          data: item.data,
+        }),
+      ] as const);
+    return new Map(entries);
   }, [resources]);
 
   const videoItemMap = useMemo(
@@ -737,12 +949,17 @@ export function ClipComposer({
       sourceDurationSec: null,
     });
 
+    const insertAt = currentDocument.selectedClipId
+      ? currentDocument.clips.findIndex((clip) => clip.id === currentDocument.selectedClipId) + 1
+      : currentDocument.clips.length;
+    const playheadStart = timelineStartAtIndex(currentDocument.clips, clamp(insertAt, 0, currentDocument.clips.length));
+
     commitDocument((current) => {
-      const insertAt = current.selectedClipId
+      const nextInsertAt = current.selectedClipId
         ? current.clips.findIndex((clip) => clip.id === current.selectedClipId) + 1
         : current.clips.length;
       const nextClips = [...current.clips];
-      nextClips.splice(clamp(insertAt, 0, nextClips.length), 0, nextClip);
+      nextClips.splice(clamp(nextInsertAt, 0, nextClips.length), 0, nextClip);
       return {
         ...current,
         clips: nextClips,
@@ -754,11 +971,13 @@ export function ClipComposer({
         previewMode: "program",
       };
     });
+    setTimelinePlayheadSec(playheadStart);
     void message.success(`已加入时间线：${sourceItem.title}`, 0.8);
     onConsumeQueuedClipResource?.();
   }, [
     commitDocument,
-    currentDocument.clips.length,
+    currentDocument.clips,
+    currentDocument.selectedClipId,
     editor.bootstrapped,
     message,
     onConsumeQueuedClipResource,
@@ -775,26 +994,53 @@ export function ClipComposer({
     [currentDocument.clips, currentDocument.selectedClipId],
   );
 
-  const selectedSource = useMemo(
-    () => (
-      currentDocument.selectedSourceResourceId
-        ? (videoItemMap.get(currentDocument.selectedSourceResourceId) ?? null)
-        : null
-    ),
-    [currentDocument.selectedSourceResourceId, videoItemMap],
+  const timelineSegments = useMemo(
+    () => buildTimelineSegments(currentDocument.clips),
+    [currentDocument.clips],
   );
 
-  const totalDuration = useMemo(
-    () => currentDocument.clips.reduce((sum, clip) => sum + Math.max(0, clip.outSec - clip.inSec), 0),
-    [currentDocument.clips],
+  const totalDuration = useMemo(() => {
+    const tail = timelineSegments[timelineSegments.length - 1];
+    return tail?.endSec ?? 0;
+  }, [timelineSegments]);
+
+  const playheadSegment = useMemo(
+    () => findTimelineSegmentAt(timelineSegments, timelinePlayheadSec),
+    [timelinePlayheadSec, timelineSegments],
   );
 
   const previewClip = useMemo(() => {
     if (isProgramPlaying && programPlaybackIndex !== null) {
       return currentDocument.clips[programPlaybackIndex] ?? null;
     }
-    return selectedClip;
-  }, [currentDocument.clips, isProgramPlaying, programPlaybackIndex, selectedClip]);
+    return playheadSegment?.clip ?? selectedClip;
+  }, [
+    currentDocument.clips,
+    isProgramPlaying,
+    playheadSegment,
+    programPlaybackIndex,
+    selectedClip,
+  ]);
+
+  useEffect(() => {
+    setTimelinePlayheadSec((current) => clamp(current, 0, totalDuration));
+  }, [totalDuration]);
+
+  useEffect(() => {
+    if (isProgramPlaying) return;
+    const segment = playheadSegment;
+    if (!segment) return;
+    if (currentDocument.selectedClipId === segment.clip.id) return;
+    commitDocument((current) => ({
+      ...current,
+      selectedClipId: segment.clip.id,
+      selectedSourceResourceId: segment.clip.resourceId ?? current.selectedSourceResourceId,
+      sourceInSec: segment.clip.inSec,
+      sourceOutSec: segment.clip.outSec,
+      sourceDurationSec: segment.clip.sourceDurationSec,
+      previewMode: "program",
+    }), { recordHistory: false });
+  }, [commitDocument, currentDocument.selectedClipId, isProgramPlaying, playheadSegment]);
 
   const stopProgramPlayback = useCallback(() => {
     setIsProgramPlaying(false);
@@ -821,17 +1067,29 @@ export function ClipComposer({
     }
     const nextIndex = findNextPlayableIndex(programPlaybackIndex + 1);
     if (nextIndex === null) {
+      setTimelinePlayheadSec(totalDuration);
       stopProgramPlayback();
       return;
     }
+    const nextSegment = timelineSegments[nextIndex];
     programAdvancingRef.current = true;
     setProgramPlaybackIndex(nextIndex);
+    if (nextSegment) {
+      setTimelinePlayheadSec(nextSegment.startSec);
+    }
     commitDocument((current) => ({
       ...current,
       selectedClipId: current.clips[nextIndex]?.id ?? null,
       previewMode: "program",
     }), { recordHistory: false });
-  }, [commitDocument, findNextPlayableIndex, programPlaybackIndex, stopProgramPlayback]);
+  }, [
+    commitDocument,
+    findNextPlayableIndex,
+    programPlaybackIndex,
+    stopProgramPlayback,
+    timelineSegments,
+    totalDuration,
+  ]);
 
   useEffect(() => {
     if (!isProgramPlaying || programPlaybackIndex === null) return;
@@ -861,25 +1119,6 @@ export function ClipComposer({
       video.removeEventListener("loadedmetadata", begin);
     };
   }, [advanceToNextClip, currentDocument.clips, isProgramPlaying, programPlaybackIndex]);
-
-  useEffect(() => {
-    if (!selectedSource || currentDocument.previewMode !== "source") return;
-    const video = sourceVideoRef.current;
-    if (!video) return;
-
-    const seekToInPoint = () => {
-      video.currentTime = currentDocument.sourceInSec;
-    };
-
-    if (video.readyState >= 1) {
-      seekToInPoint();
-    }
-
-    video.addEventListener("loadedmetadata", seekToInPoint);
-    return () => {
-      video.removeEventListener("loadedmetadata", seekToInPoint);
-    };
-  }, [currentDocument.previewMode, currentDocument.sourceInSec, selectedSource]);
 
   const persistPlan = useCallback(async (saveMode: "manual" | "autosave") => {
     if (!sequenceId) {
@@ -1037,16 +1276,74 @@ export function ClipComposer({
   }, [currentDocument.clips.length, editor.bootstrapped, persistPlan, sequenceId, serializedDocument]);
 
   const handleProgramTimeUpdate = useCallback(() => {
-    if (!isProgramPlaying || programPlaybackIndex === null || programAdvancingRef.current) return;
-    const clip = currentDocument.clips[programPlaybackIndex];
     const video = programVideoRef.current;
-    if (!clip || !video) return;
-    if (video.currentTime >= clip.outSec - 0.03) {
-      advanceToNextClip();
+    if (!video || programAdvancingRef.current) return;
+
+    if (isProgramPlaying && programPlaybackIndex !== null) {
+      const clip = currentDocument.clips[programPlaybackIndex];
+      const segment = timelineSegments[programPlaybackIndex];
+      if (!clip || !segment) return;
+      const offset = clamp(video.currentTime - clip.inSec, 0, clipDurationSec(clip));
+      setTimelinePlayheadSec(clamp(segment.startSec + offset, segment.startSec, segment.endSec));
+      if (video.currentTime >= clip.outSec - 0.03) {
+        advanceToNextClip();
+      }
+      return;
     }
-  }, [advanceToNextClip, currentDocument.clips, isProgramPlaying, programPlaybackIndex]);
+
+    const segment = playheadSegment;
+    if (!segment) return;
+    const offset = clamp(video.currentTime - segment.clip.inSec, 0, segment.durationSec);
+    const nextSec = clamp(segment.startSec + offset, segment.startSec, segment.endSec);
+    setTimelinePlayheadSec((current) => {
+      if (Math.abs(current - nextSec) <= 0.02) return current;
+      return nextSec;
+    });
+    if (video.currentTime >= segment.clip.outSec - 0.03) {
+      video.pause();
+    }
+  }, [
+    advanceToNextClip,
+    currentDocument.clips,
+    isProgramPlaying,
+    playheadSegment,
+    programPlaybackIndex,
+    timelineSegments,
+  ]);
+
+  useEffect(() => {
+    if (isProgramPlaying) return;
+    const segment = playheadSegment;
+    const video = programVideoRef.current;
+    if (!segment || !segment.clip.url || !video) return;
+
+    const localOffset = clamp(timelinePlayheadSec - segment.startSec, 0, segment.durationSec);
+    const targetTime = clamp(
+      segment.clip.inSec + localOffset,
+      segment.clip.inSec,
+      segment.clip.outSec,
+    );
+    const syncFrame = () => {
+      if (Math.abs(video.currentTime - targetTime) > 0.03) {
+        video.currentTime = targetTime;
+      }
+    };
+
+    if (video.readyState >= 1) {
+      syncFrame();
+      return;
+    }
+    video.addEventListener("loadedmetadata", syncFrame);
+    return () => {
+      video.removeEventListener("loadedmetadata", syncFrame);
+    };
+  }, [isProgramPlaying, playheadSegment, timelinePlayheadSec]);
 
   const selectClip = useCallback((clipId: string) => {
+    const segment = timelineSegments.find((item) => item.clip.id === clipId) ?? null;
+    if (segment) {
+      setTimelinePlayheadSec(segment.startSec);
+    }
     commitDocument((current) => {
       const clip = current.clips.find((item) => item.id === clipId) ?? null;
       return {
@@ -1058,136 +1355,186 @@ export function ClipComposer({
         sourceDurationSec: clip?.sourceDurationSec ?? current.sourceDurationSec,
       };
     }, { recordHistory: false });
-  }, [commitDocument]);
-
-  const selectSource = useCallback((resourceId: string) => {
-    commitDocument((current) => {
-      const relatedClip = current.clips.find((clip) => clip.resourceId === resourceId) ?? null;
-      const defaultRange = buildDefaultRange(relatedClip?.sourceDurationSec ?? null);
-      return {
-        ...current,
-        selectedSourceResourceId: resourceId,
-        sourceInSec: relatedClip?.inSec ?? defaultRange.inSec,
-        sourceOutSec: relatedClip?.outSec ?? defaultRange.outSec,
-        sourceDurationSec: relatedClip?.sourceDurationSec ?? null,
-        previewMode: "source",
-      };
-    }, { recordHistory: false });
-  }, [commitDocument]);
-
-  const updateSourceRange = useCallback((nextRange: [number, number]) => {
-    commitDocument((current) => {
-      const min = quantize(nextRange[0], current.snapStepSec, current.snapEnabled);
-      const max = quantize(nextRange[1], current.snapStepSec, current.snapEnabled);
-      return {
-        ...current,
-        sourceInSec: min,
-        sourceOutSec: clamp(max, min, current.sourceDurationSec ?? Number.MAX_SAFE_INTEGER),
-      };
-    }, { recordHistory: false });
-  }, [commitDocument]);
-
-  const insertCurrentSource = useCallback(() => {
-    if (!selectedSource) {
-      void message.warning("请先选择一个源素材。");
-      return;
-    }
-
-    const nextClip: ClipDraft = {
-      id: crypto.randomUUID(),
-      resourceId: selectedSource.id,
-      url: selectedSource.url,
-      title: selectedSource.title,
-      inSec: currentDocument.sourceInSec,
-      outSec: currentDocument.sourceOutSec,
-      transition: currentDocument.clips.length === 0 ? "none" : "cut",
-      sourceDurationSec: currentDocument.sourceDurationSec,
-    };
-
-    commitDocument((current) => {
-      const insertAt = current.selectedClipId
-        ? current.clips.findIndex((clip) => clip.id === current.selectedClipId) + 1
-        : current.clips.length;
-      const nextClips = [...current.clips];
-      nextClips.splice(clamp(insertAt, 0, nextClips.length), 0, nextClip);
-      return {
-        ...current,
-        clips: nextClips,
-        selectedClipId: nextClip.id,
-        previewMode: "program",
-      };
-    });
-  }, [commitDocument, currentDocument, message, selectedSource]);
-
-  const replaceSelectedClipFromSource = useCallback(() => {
-    if (!selectedClip || !selectedSource) {
-      void message.warning("请先选择要替换的片段和源素材。");
-      return;
-    }
-
-    commitDocument((current) => ({
-      ...current,
-      clips: current.clips.map((clip) => {
-        if (clip.id !== selectedClip.id) return clip;
-        return {
-          ...clip,
-          resourceId: selectedSource.id,
-          url: selectedSource.url,
-          title: selectedSource.title,
-          inSec: current.sourceInSec,
-          outSec: current.sourceOutSec,
-          sourceDurationSec: current.sourceDurationSec,
-        };
-      }),
-    }));
-  }, [commitDocument, message, selectedClip, selectedSource]);
-
-  const addAllVideos = useCallback(() => {
-    if (videoItems.length === 0) {
-      void message.warning("当前没有可用视频素材。");
-      return;
-    }
-
-    const selectedIds = new Set(
-      currentDocument.clips
-        .map((clip) => clip.resourceId)
-        .filter((id): id is string => id !== null),
-    );
-    const append: ClipDraft[] = videoItems
-      .filter((item) => !selectedIds.has(item.id))
-      .map((item, index) => ({
-        id: crypto.randomUUID(),
-        resourceId: item.id,
-        url: item.url,
-        title: item.title,
-        inSec: 0,
-        outSec: 4,
-        transition: currentDocument.clips.length === 0 && index === 0 ? "none" : "cut",
-        sourceDurationSec: null,
-      }));
-
-    if (append.length === 0) {
-      void message.info("所有视频候选都已在时间线中。", 0.8);
-      return;
-    }
-
-    commitDocument((current) => ({
-      ...current,
-      clips: [...current.clips, ...append],
-      selectedClipId: current.selectedClipId ?? append[0]?.id ?? null,
-    }));
-  }, [commitDocument, currentDocument.clips, message, videoItems]);
+  }, [commitDocument, timelineSegments]);
 
   const removeClip = useCallback((clipId: string) => {
     if (isProgramPlaying) {
       stopProgramPlayback();
     }
+    const removeIndex = currentDocument.clips.findIndex((clip) => clip.id === clipId);
+    if (removeIndex < 0) return;
+
+    const nextClips = currentDocument.clips.filter((clip) => clip.id !== clipId);
+    const nextSelected = nextClips[removeIndex] ?? nextClips[removeIndex - 1] ?? null;
+    if (nextSelected) {
+      const nextIndex = nextClips.findIndex((clip) => clip.id === nextSelected.id);
+      if (nextIndex >= 0) {
+        setTimelinePlayheadSec(timelineStartAtIndex(nextClips, nextIndex));
+      }
+    } else {
+      setTimelinePlayheadSec(0);
+    }
+
+    commitDocument((current) => {
+      const currentRemoveIndex = current.clips.findIndex((clip) => clip.id === clipId);
+      if (currentRemoveIndex < 0) return current;
+      const clipped = current.clips.filter((clip) => clip.id !== clipId);
+      const fallback = clipped[currentRemoveIndex] ?? clipped[currentRemoveIndex - 1] ?? null;
+      const retarget = current.selectedClipId === clipId;
+      return {
+        ...current,
+        clips: clipped,
+        selectedClipId: retarget ? fallback?.id ?? null : current.selectedClipId,
+        selectedSourceResourceId: retarget
+          ? (fallback?.resourceId ?? current.selectedSourceResourceId)
+          : current.selectedSourceResourceId,
+        sourceInSec: retarget ? (fallback?.inSec ?? current.sourceInSec) : current.sourceInSec,
+        sourceOutSec: retarget ? (fallback?.outSec ?? current.sourceOutSec) : current.sourceOutSec,
+        sourceDurationSec: retarget
+          ? (fallback?.sourceDurationSec ?? current.sourceDurationSec)
+          : current.sourceDurationSec,
+      };
+    });
+  }, [commitDocument, currentDocument.clips, isProgramPlaying, stopProgramPlayback]);
+
+  const splitClipAtPlayhead = useCallback(() => {
+    const segment = playheadSegment;
+    if (!segment) {
+      void message.warning("请先把播放头移动到要切割的位置。");
+      return;
+    }
+
+    const clip = segment.clip;
+    const localOffset = clamp(timelinePlayheadSec - segment.startSec, 0, segment.durationSec);
+    const rawCutSec = clip.inSec + localOffset;
+    const quantizedCutSec = quantize(rawCutSec, currentDocument.snapStepSec, currentDocument.snapEnabled);
+    const cutSec = clamp(quantizedCutSec, clip.inSec, clip.outSec);
+    const edgePadding = Math.max(
+      0.05,
+      currentDocument.snapEnabled ? currentDocument.snapStepSec * 0.5 : 0.05,
+    );
+
+    if (cutSec <= clip.inSec + edgePadding || cutSec >= clip.outSec - edgePadding) {
+      void message.warning("播放头太靠近片段边界，无法切割。");
+      return;
+    }
+
+    const nextClipId = crypto.randomUUID();
+    commitDocument((current) => {
+      const index = current.clips.findIndex((item) => item.id === clip.id);
+      const source = current.clips[index];
+      if (index < 0 || !source) return current;
+      const boundedCut = clamp(cutSec, source.inSec + 0.01, source.outSec - 0.01);
+      const first: ClipDraft = {
+        ...source,
+        outSec: boundedCut,
+      };
+      const second: ClipDraft = {
+        ...source,
+        id: nextClipId,
+        inSec: boundedCut,
+        transition: "cut",
+      };
+      const nextClips = [...current.clips];
+      nextClips.splice(index, 1, first, second);
+      return {
+        ...current,
+        clips: nextClips,
+        selectedClipId: second.id,
+        selectedSourceResourceId: second.resourceId ?? current.selectedSourceResourceId,
+        sourceInSec: second.inSec,
+        sourceOutSec: second.outSec,
+        sourceDurationSec: second.sourceDurationSec ?? current.sourceDurationSec,
+        previewMode: "program",
+      };
+    });
+    setTimelinePlayheadSec(segment.startSec + (cutSec - clip.inSec));
+    void message.success("已在播放头切割片段。", 0.8);
+  }, [
+    commitDocument,
+    currentDocument.snapEnabled,
+    currentDocument.snapStepSec,
+    message,
+    playheadSegment,
+    timelinePlayheadSec,
+  ]);
+
+  const handleRippleDelete = useCallback(() => {
+    if (!selectedClip) {
+      void message.warning("请先选择一个片段。");
+      return;
+    }
+    removeClip(selectedClip.id);
+    void message.success("已波纹删除当前片段。", 0.8);
+  }, [message, removeClip, selectedClip]);
+
+  const applyAutoRoughCut = useCallback(() => {
+    if (videoItems.length === 0) {
+      void message.warning("当前没有可用视频素材，无法自动生成粗剪。");
+      return;
+    }
+    if (isProgramPlaying) {
+      stopProgramPlayback();
+    }
+
+    const rolePriority: Record<string, number> = {
+      first_frame_ref: 0,
+      scene_ref: 1,
+      empty_shot_ref: 2,
+      motion_ref: 3,
+      character_ref: 4,
+      last_frame_ref: 5,
+      storyboard_ref: 6,
+      style_ref: 7,
+      dialogue_ref: 8,
+    };
+
+    const sortedCandidates = [...videoItems].sort((a, b) => {
+      const roleA = videoRoleMap.get(a.id);
+      const roleB = videoRoleMap.get(b.id);
+      const rankA = roleA ? (rolePriority[roleA] ?? 99) : 99;
+      const rankB = roleB ? (rolePriority[roleB] ?? 99) : 99;
+      if (rankA !== rankB) return rankA - rankB;
+      return a.title.localeCompare(b.title, "zh-Hans-CN");
+    });
+
+    const nextClips = sortedCandidates
+      .slice(0, 8)
+      .map((source, index) => {
+        const presetDuration = inferAutoRoughCutDurationSec(source, index);
+        const nextClip = createClipFromSource(source, index, {
+          inSec: 0,
+          outSec: Number(clamp(presetDuration, 0.8, 6.5).toFixed(2)),
+          sourceDurationSec: null,
+        });
+        return {
+          ...nextClip,
+          transition: index === 0
+            ? "none"
+            : ROUGH_CUT_TRANSITION_PRESETS[(index - 1) % ROUGH_CUT_TRANSITION_PRESETS.length] ?? "cut",
+        };
+      });
+
     commitDocument((current) => ({
       ...current,
-      clips: current.clips.filter((clip) => clip.id !== clipId),
-      selectedClipId: current.selectedClipId === clipId ? null : current.selectedClipId,
+      clips: nextClips,
+      selectedClipId: nextClips[0]?.id ?? null,
+      selectedSourceResourceId: nextClips[0]?.resourceId ?? current.selectedSourceResourceId,
+      sourceInSec: nextClips[0]?.inSec ?? current.sourceInSec,
+      sourceOutSec: nextClips[0]?.outSec ?? current.sourceOutSec,
+      sourceDurationSec: nextClips[0]?.sourceDurationSec ?? current.sourceDurationSec,
+      previewMode: "program",
     }));
-  }, [commitDocument, isProgramPlaying, stopProgramPlayback]);
+    setTimelinePlayheadSec(0);
+    void message.success(`AI 粗剪已生成：${nextClips.length} 段并自动应用转场预设。`, 1.2);
+  }, [
+    commitDocument,
+    isProgramPlaying,
+    message,
+    stopProgramPlayback,
+    videoItems,
+    videoRoleMap,
+  ]);
 
   const duplicateSelectedClip = useCallback(() => {
     if (!selectedClip) {
@@ -1210,22 +1557,6 @@ export function ClipComposer({
       };
     });
   }, [commitDocument, message, selectedClip]);
-
-  const updateClipRange = useCallback((clipId: string, nextRange: [number, number]) => {
-    commitDocument((current) => ({
-      ...current,
-      clips: current.clips.map((clip) => {
-        if (clip.id !== clipId) return clip;
-        const min = quantize(nextRange[0], current.snapStepSec, current.snapEnabled);
-        const max = quantize(nextRange[1], current.snapStepSec, current.snapEnabled);
-        return {
-          ...clip,
-          inSec: min,
-          outSec: clamp(max, min, clip.sourceDurationSec ?? Number.MAX_SAFE_INTEGER),
-        };
-      }),
-    }));
-  }, [commitDocument]);
 
   const updateSelectedClip = useCallback((patch: Partial<ClipDraft>) => {
     if (!selectedClip) return;
@@ -1270,24 +1601,36 @@ export function ClipComposer({
       void message.warning("请先至少加入一个片段。");
       return;
     }
-    const startIndex = currentDocument.selectedClipId
-      ? currentDocument.clips.findIndex((clip) => clip.id === currentDocument.selectedClipId)
-      : 0;
-    const firstPlayable = findNextPlayableIndex(Math.max(startIndex, 0));
+    const playheadIndex = playheadSegment?.index ?? 0;
+    const firstPlayable = findNextPlayableIndex(Math.max(playheadIndex, 0));
     if (firstPlayable === null) {
       void message.warning("当前没有可播放的视频片段。");
       return;
     }
+    const startSegment = timelineSegments[firstPlayable];
     setIsProgramPlaying(true);
     setProgramPlaybackIndex(firstPlayable);
+    if (startSegment) {
+      setTimelinePlayheadSec(startSegment.startSec);
+    }
     commitDocument((current) => ({
       ...current,
       selectedClipId: current.clips[firstPlayable]?.id ?? null,
       previewMode: "program",
     }), { recordHistory: false });
-  }, [commitDocument, currentDocument.clips, currentDocument.selectedClipId, findNextPlayableIndex, message]);
+  }, [
+    commitDocument,
+    currentDocument.clips.length,
+    findNextPlayableIndex,
+    message,
+    playheadSegment?.index,
+    timelineSegments,
+  ]);
 
   const handleUndo = useCallback(() => {
+    if (isProgramPlaying) {
+      stopProgramPlayback();
+    }
     setEditor((prev) => {
       if (prev.historyIndex === 0) return prev;
       const nextIndex = prev.historyIndex - 1;
@@ -1297,9 +1640,12 @@ export function ClipComposer({
         present: cloneDocument(prev.history[nextIndex]!),
       };
     });
-  }, []);
+  }, [isProgramPlaying, stopProgramPlayback]);
 
   const handleRedo = useCallback(() => {
+    if (isProgramPlaying) {
+      stopProgramPlayback();
+    }
     setEditor((prev) => {
       if (prev.historyIndex >= prev.history.length - 1) return prev;
       const nextIndex = prev.historyIndex + 1;
@@ -1309,14 +1655,7 @@ export function ClipComposer({
         present: cloneDocument(prev.history[nextIndex]!),
       };
     });
-  }, []);
-
-  const sourceMonitorDuration = currentDocument.sourceDurationSec ?? Math.max(currentDocument.sourceOutSec + 2, 8);
-
-  const sourceUsageCount = useMemo(
-    () => currentDocument.clips.filter((clip) => clip.resourceId === selectedSource?.id).length,
-    [currentDocument.clips, selectedSource],
-  );
+  }, [isProgramPlaying, stopProgramPlayback]);
 
   const autosaveLabel = useMemo(() => {
     if (autosaveState === "saving") return "自动保存中";
@@ -1327,6 +1666,128 @@ export function ClipComposer({
     if (autosaveState === "error") return "自动保存失败";
     return "未开始";
   }, [autosaveState, lastSavedAt]);
+
+  const timelinePixelsPerSecond = useMemo(
+    () => Math.max(12, currentDocument.timelineZoom * 1.05),
+    [currentDocument.timelineZoom],
+  );
+
+  const timelineTrackWidth = useMemo(
+    () => Math.max(540, totalDuration * timelinePixelsPerSecond),
+    [timelinePixelsPerSecond, totalDuration],
+  );
+
+  const seekPlayhead = useCallback((nextSec: number) => {
+    const clampedSec = clamp(nextSec, 0, totalDuration);
+    setTimelinePlayheadSec(clampedSec);
+    const segment = findTimelineSegmentAt(timelineSegments, clampedSec);
+    if (!segment) return;
+    commitDocument((current) => ({
+      ...current,
+      selectedClipId: segment.clip.id,
+      selectedSourceResourceId: segment.clip.resourceId ?? current.selectedSourceResourceId,
+      sourceInSec: segment.clip.inSec,
+      sourceOutSec: segment.clip.outSec,
+      sourceDurationSec: segment.clip.sourceDurationSec,
+      previewMode: "program",
+    }), { recordHistory: false });
+  }, [commitDocument, timelineSegments, totalDuration]);
+
+  const scrubTimelineAtClientX = useCallback((clientX: number) => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+    const bounds = viewport.getBoundingClientRect();
+    const localX = clientX - bounds.left + viewport.scrollLeft;
+    const nextSec = clamp(localX / timelinePixelsPerSecond, 0, totalDuration);
+    seekPlayhead(nextSec);
+  }, [seekPlayhead, timelinePixelsPerSecond, totalDuration]);
+
+  const handleTimelineRulerMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    scrubTimelineAtClientX(event.clientX);
+
+    const onMove = (moveEvent: MouseEvent) => {
+      scrubTimelineAtClientX(moveEvent.clientX);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [scrubTimelineAtClientX]);
+
+  const handleTimelineDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    const types = Array.from(event.dataTransfer.types);
+    if (!types.includes(CLIP_ATLAS_DRAG_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsTimelineDragOver(true);
+  }, []);
+
+  const handleTimelineDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsTimelineDragOver(false);
+    const raw = event.dataTransfer.getData(CLIP_ATLAS_DRAG_MIME);
+    const payload = parseClipAtlasDragPayload(raw);
+    if (!payload) {
+      void message.warning("仅支持从右侧素材栏拖入已生成视频。");
+      return;
+    }
+    const insertIndex = findInsertIndexAtPlayhead(timelineSegments, timelinePlayheadSec);
+    const insertAt = clamp(insertIndex, 0, currentDocument.clips.length);
+    const nextSource: SourceVideoItem = {
+      id: payload.id,
+      title: payload.title,
+      url: payload.url,
+      category: payload.category,
+    };
+    const nextRange = buildDefaultRange(null);
+    const nextClip = createClipFromSource(nextSource, insertAt, {
+      inSec: nextRange.inSec,
+      outSec: nextRange.outSec,
+      sourceDurationSec: null,
+    });
+    const startSec = timelineStartAtIndex(currentDocument.clips, insertAt);
+    commitDocument((current) => {
+      const nextClips = [...current.clips];
+      nextClips.splice(insertAt, 0, nextClip);
+      return {
+        ...current,
+        clips: nextClips,
+        selectedClipId: nextClip.id,
+        selectedSourceResourceId: nextSource.id,
+        sourceInSec: nextClip.inSec,
+        sourceOutSec: nextClip.outSec,
+        sourceDurationSec: null,
+        previewMode: "program",
+      };
+    });
+    setTimelinePlayheadSec(startSec);
+    void message.success(`已拖入时间线：${nextSource.title}`, 0.8);
+  }, [commitDocument, currentDocument.clips, message, timelinePlayheadSec, timelineSegments]);
+
+  const handleTimelineDragLeave = useCallback(() => {
+    setIsTimelineDragOver(false);
+  }, []);
+
+  useEffect(() => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+    const targetX = timelinePlayheadSec * timelinePixelsPerSecond;
+    const visibleStart = viewport.scrollLeft;
+    const visibleEnd = visibleStart + viewport.clientWidth;
+    const padding = 72;
+
+    if (targetX < visibleStart + padding) {
+      viewport.scrollLeft = Math.max(0, targetX - padding);
+      return;
+    }
+    if (targetX > visibleEnd - padding) {
+      viewport.scrollLeft = Math.max(0, targetX - viewport.clientWidth + padding);
+    }
+  }, [timelinePixelsPerSecond, timelinePlayheadSec]);
 
   if (!resources) {
     return (
@@ -1344,10 +1805,18 @@ export function ClipComposer({
             Clip Studio
           </Typography.Text>
           <div className="mt-1 text-[11px] text-[var(--af-muted)]">
-            Source Monitor / Program Monitor / Timeline / Inspector
+            左侧小 Inspector · 右侧 Preview（上）+ Timeline（下），布局固定
           </div>
         </div>
         <Space size={8}>
+          <Button
+            size="small"
+            icon={<ThunderboltOutlined />}
+            disabled={videoItems.length === 0}
+            onClick={applyAutoRoughCut}
+          >
+            AI 自动粗剪
+          </Button>
           <Tag color={autosaveState === "error" ? "error" : autosaveState === "saved" ? "success" : "default"}>
             {autosaveLabel}
           </Tag>
@@ -1359,325 +1828,14 @@ export function ClipComposer({
         className="mb-4"
         showIcon
         type="info"
-        title="当前剪辑台支持：拖拽重排、拖拽裁切、串播预览、自动保存、撤销/重做与跨会话恢复。"
+        title="从右侧素材栏拖入视频到时间线；拖动时间尺可 scrub 并联动 Preview 与当前片段。可一键 AI 自动粗剪并应用转场预设。"
       />
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.08fr,1fr]">
-        <Card
-          className="ceramic-panel !border-transparent"
-          title="Source Monitor"
-          extra={(
-            <Space size={8}>
-              <Button size="small" onClick={addAllVideos}>
-                加入全部候选
-              </Button>
-              <Button size="small" type="primary" onClick={insertCurrentSource} disabled={!selectedSource}>
-                插入时间线
-              </Button>
-            </Space>
-          )}
+      <div className="overflow-x-auto pb-1">
+        <div
+          className="grid min-w-[1080px] gap-4"
+          style={{ gridTemplateColumns: "248px minmax(0, 1fr)" }}
         >
-          {selectedSource?.url ? (
-            <video
-              ref={sourceVideoRef}
-              src={selectedSource.url}
-              controls
-              className="h-72 w-full rounded-[20px] border border-[rgba(229,221,210,0.9)] bg-black object-contain"
-              onLoadedMetadata={() => {
-                const video = sourceVideoRef.current;
-                if (!video || !Number.isFinite(video.duration)) return;
-                const durationSec = Number(video.duration.toFixed(3));
-                commitDocument((current) => ({
-                  ...current,
-                  sourceDurationSec: durationSec,
-                  sourceOutSec: clamp(current.sourceOutSec, current.sourceInSec, durationSec),
-                  clips: current.clips.map((clip) => (
-                    clip.id === current.selectedClipId && clip.resourceId === current.selectedSourceResourceId
-                      ? { ...clip, sourceDurationSec: durationSec }
-                      : clip
-                  )),
-                }), { recordHistory: false });
-              }}
-            />
-          ) : (
-            <div className="flex h-72 items-center justify-center rounded-[20px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[12px] text-[var(--af-muted)]">
-              从右侧候选中选择一个视频作为源素材。
-            </div>
-          )}
-
-          <div className="mt-3 rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-[12px] font-medium text-[var(--af-text)]">
-                  {selectedSource?.title ?? "未选择源素材"}
-                </div>
-                <div className="mt-1 text-[11px] text-[var(--af-muted)]">
-                  使用中 {sourceUsageCount} 次 · 范围 {currentDocument.sourceInSec.toFixed(2)}s - {currentDocument.sourceOutSec.toFixed(2)}s
-                </div>
-              </div>
-              <Segmented<MonitorMode>
-                size="small"
-                value={currentDocument.previewMode}
-                onChange={(value) => {
-                  commitDocument((current) => ({
-                    ...current,
-                    previewMode: value,
-                  }), { recordHistory: false });
-                }}
-                options={[
-                  { label: "Source", value: "source" },
-                  { label: "Program", value: "program" },
-                ]}
-              />
-            </div>
-
-            <div className="mt-4">
-              <Slider
-                range
-                min={0}
-                max={Number(sourceMonitorDuration.toFixed(3))}
-              step={currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.1}
-              value={[currentDocument.sourceInSec, currentDocument.sourceOutSec]}
-              onChange={(value) => {
-                if (!Array.isArray(value) || value.length !== 2) return;
-                const [nextIn, nextOut] = value;
-                if (typeof nextIn !== "number" || typeof nextOut !== "number") return;
-                updateSourceRange([nextIn, nextOut]);
-              }}
-            />
-            </div>
-
-            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="space-y-1">
-                <div className="text-[11px] text-[var(--af-muted)]">In</div>
-                <InputNumber
-                  min={0}
-                  value={currentDocument.sourceInSec}
-                  onChange={(value) => updateSourceRange([Number(value ?? 0), currentDocument.sourceOutSec])}
-                  style={{ width: "100%" }}
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="text-[11px] text-[var(--af-muted)]">Out</div>
-                <InputNumber
-                  min={currentDocument.sourceInSec}
-                  value={currentDocument.sourceOutSec}
-                  onChange={(value) => updateSourceRange([currentDocument.sourceInSec, Number(value ?? currentDocument.sourceInSec)])}
-                  style={{ width: "100%" }}
-                />
-              </div>
-              <Button onClick={replaceSelectedClipFromSource} disabled={!selectedClip || !selectedSource}>
-                替换当前片段
-              </Button>
-              <Button onClick={insertCurrentSource} type="primary" disabled={!selectedSource}>
-                以当前范围插入
-              </Button>
-            </div>
-          </div>
-
-          <div className="mt-4">
-            <div className="mb-2 flex items-center justify-between">
-              <Typography.Text strong style={{ fontSize: 12 }}>
-                Source Bin
-              </Typography.Text>
-              <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                {videoItems.length} 个视频候选
-              </Typography.Text>
-            </div>
-            {videoItems.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无视频候选" />
-            ) : (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {videoItems.map((item) => {
-                  const usage = currentDocument.clips.filter((clip) => clip.resourceId === item.id).length;
-                  const active = item.id === selectedSource?.id;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`rounded-[18px] border px-3 py-2 text-left transition ${
-                        active
-                          ? "border-[var(--af-brand)] bg-[rgba(255,253,249,0.96)]"
-                          : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.9)]"
-                      }`}
-                      onClick={() => selectSource(item.id)}
-                    >
-                      <div className="truncate text-[12px] font-medium text-[var(--af-text)]">
-                        {item.title}
-                      </div>
-                      <div className="mt-1 flex items-center justify-between text-[10px] text-[var(--af-muted)]">
-                        <span>{item.category}</span>
-                        <span>timeline x{usage}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </Card>
-
-        <Card
-          className="ceramic-panel !border-transparent"
-          title="Program Monitor"
-          extra={(
-            isProgramPlaying ? (
-              <Button size="small" danger icon={<PauseCircleOutlined />} onClick={stopProgramPlayback}>
-                停止
-              </Button>
-            ) : (
-              <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={startProgramPlayback}>
-                串播预览
-              </Button>
-            )
-          )}
-        >
-          {previewClip?.url ? (
-            <video
-              ref={programVideoRef}
-              src={previewClip.url}
-              controls={!isProgramPlaying}
-              className="h-72 w-full rounded-[20px] border border-[rgba(229,221,210,0.9)] bg-black object-contain"
-              onTimeUpdate={handleProgramTimeUpdate}
-              onEnded={() => {
-                if (isProgramPlaying) {
-                  advanceToNextClip();
-                }
-              }}
-            />
-          ) : (
-            <div className="flex h-72 items-center justify-center rounded-[20px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[12px] text-[var(--af-muted)]">
-              选择时间线片段后在这里检查节奏与转场。
-            </div>
-          )}
-
-          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-            <div className="rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] p-3">
-              <div className="text-[11px] text-[var(--af-muted)]">当前片段</div>
-              <div className="mt-1 text-[12px] font-medium text-[var(--af-text)]">
-                {previewClip?.title ?? "未选择"}
-              </div>
-            </div>
-            <div className="rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] p-3">
-              <div className="text-[11px] text-[var(--af-muted)]">播放状态</div>
-              <div className="mt-1 text-[12px] font-medium text-[var(--af-text)]">
-                {isProgramPlaying && programPlaybackIndex !== null
-                  ? `串播第 ${programPlaybackIndex + 1} 段`
-                  : "单片段检查"}
-              </div>
-            </div>
-            <div className="rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] p-3">
-              <div className="text-[11px] text-[var(--af-muted)]">时间线总长</div>
-              <div className="mt-1 text-[12px] font-medium text-[var(--af-text)]">
-                {totalDuration.toFixed(2)}s
-              </div>
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[1.55fr,0.9fr]">
-        <Card
-          className="ceramic-panel !border-transparent"
-          title="Timeline"
-          extra={(
-            <Space size={8}>
-              <Button size="small" icon={<UndoOutlined />} disabled={editor.historyIndex === 0} onClick={handleUndo}>
-                撤销
-              </Button>
-              <Button
-                size="small"
-                icon={<RedoOutlined />}
-                disabled={editor.historyIndex >= editor.history.length - 1}
-                onClick={handleRedo}
-              >
-                重做
-              </Button>
-            </Space>
-          )}
-        >
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] px-3 py-2">
-            <Space size={12} wrap>
-              <span className="text-[11px] text-[var(--af-muted)]">吸附</span>
-              <Switch
-                size="small"
-                checked={currentDocument.snapEnabled}
-                onChange={(checked) => {
-                  commitDocument((current) => ({
-                    ...current,
-                    snapEnabled: checked,
-                  }), { recordHistory: false });
-                }}
-              />
-              <span className="text-[11px] text-[var(--af-muted)]">Step</span>
-              <Select<number>
-                size="small"
-                value={currentDocument.snapStepSec}
-                style={{ width: 110 }}
-                onChange={(value) => {
-                  commitDocument((current) => ({
-                    ...current,
-                    snapStepSec: value,
-                  }), { recordHistory: false });
-                }}
-                options={[
-                  { value: 0.1, label: "0.1s" },
-                  { value: 0.25, label: "0.25s" },
-                  { value: 0.5, label: "0.5s" },
-                  { value: 1, label: "1.0s" },
-                ]}
-              />
-            </Space>
-            <div className="flex min-w-[220px] items-center gap-3">
-              <span className="text-[11px] text-[var(--af-muted)]">Zoom</span>
-              <Slider
-                min={8}
-                max={120}
-                value={currentDocument.timelineZoom}
-                onChange={(value) => {
-                  if (typeof value !== "number") return;
-                  commitDocument((current) => ({
-                    ...current,
-                    timelineZoom: value,
-                  }), { recordHistory: false });
-                }}
-              />
-            </div>
-          </div>
-
-          {currentDocument.clips.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有片段，先从 Source Monitor 插入一段。" />
-          ) : (
-            <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-              <SortableContext items={currentDocument.clips.map((clip) => clip.id)} strategy={horizontalListSortingStrategy}>
-                <div className="overflow-x-auto rounded-[22px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] px-3 py-4">
-                  <div className="flex min-w-max items-start gap-3">
-                    {currentDocument.clips.map((clip, index) => {
-                      const duration = Math.max(0.5, clip.outSec - clip.inSec);
-                      const width = Math.max(180, duration * currentDocument.timelineZoom * 0.9);
-                      return (
-                        <SortableClipBlock
-                          key={clip.id}
-                          clip={clip}
-                          index={index}
-                          width={width}
-                          active={clip.id === currentDocument.selectedClipId}
-                          playing={isProgramPlaying && programPlaybackIndex === index}
-                          snapEnabled={currentDocument.snapEnabled}
-                          snapStepSec={currentDocument.snapStepSec}
-                          onSelect={selectClip}
-                          onTrim={updateClipRange}
-                          onDelete={removeClip}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-              </SortableContext>
-            </DndContext>
-          )}
-        </Card>
-
         <Card
           className="ceramic-panel !border-transparent"
           title="Inspector"
@@ -1735,9 +1893,12 @@ export function ClipComposer({
                   onChange={(value) => updateSelectedClip({ transition: value })}
                   style={{ width: "100%" }}
                   options={[
-                    { value: "none", label: "None" },
-                    { value: "cut", label: "Cut" },
-                    { value: "fade", label: "Fade" },
+                    { value: "none", label: transitionLabel("none") },
+                    { value: "cut", label: transitionLabel("cut") },
+                    { value: "fade", label: transitionLabel("fade") },
+                    { value: "dissolve", label: transitionLabel("dissolve") },
+                    { value: "wipe_left", label: transitionLabel("wipe_left") },
+                    { value: "fade_black", label: transitionLabel("fade_black") },
                   ]}
                 />
               </div>
@@ -1750,20 +1911,220 @@ export function ClipComposer({
                   <div>源时长：{selectedClip.sourceDurationSec ? `${selectedClip.sourceDurationSec.toFixed(2)}s` : "未检测"}</div>
                 </div>
               </div>
-
-              <div className="grid grid-cols-1 gap-2">
-                <Button icon={<ScissorOutlined />} onClick={duplicateSelectedClip}>
-                  复制当前片段
-                </Button>
-                <Button danger icon={<DeleteOutlined />} onClick={() => removeClip(selectedClip.id)}>
-                  删除当前片段
-                </Button>
-              </div>
             </div>
           )}
         </Card>
-      </div>
 
+        <div className="flex min-h-0 flex-col gap-2">
+          <Card
+            className="ceramic-panel !border-transparent"
+            title="Preview"
+            extra={(
+              isProgramPlaying ? (
+                <Button size="small" danger icon={<PauseCircleOutlined />} onClick={stopProgramPlayback}>
+                  停止
+                </Button>
+              ) : (
+                <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={startProgramPlayback}>
+                  播放
+                </Button>
+              )
+            )}
+          >
+          {previewClip?.url ? (
+            <video
+              ref={programVideoRef}
+              src={previewClip.url}
+              controls={!isProgramPlaying}
+              className="h-60 w-full rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-black object-contain"
+              onTimeUpdate={handleProgramTimeUpdate}
+              onEnded={() => {
+                if (isProgramPlaying) {
+                  advanceToNextClip();
+                }
+              }}
+            />
+          ) : (
+            <div className="flex h-60 items-center justify-center rounded-[18px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[12px] text-[var(--af-muted)]">
+              右侧素材栏拖入视频，或先在时间线选中片段。
+            </div>
+          )}
+
+          <div className="mt-2 border-t border-[rgba(229,221,210,0.85)] pt-2">
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+              <Typography.Text strong style={{ fontSize: 13 }}>
+                Timeline
+              </Typography.Text>
+              <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
+                拖入视频即可拼接，时间尺支持 click/drag scrub。
+              </Typography.Text>
+            </div>
+            <div className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] px-2.5 py-1.5">
+              <div className="mb-1.5 flex flex-wrap items-center gap-2">
+                <Space size={8}>
+                  <Button size="small" icon={<UndoOutlined />} disabled={editor.historyIndex === 0} onClick={handleUndo}>
+                    撤销
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<RedoOutlined />}
+                    disabled={editor.historyIndex >= editor.history.length - 1}
+                    onClick={handleRedo}
+                  >
+                    重做
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<ScissorOutlined />}
+                    disabled={!selectedClip}
+                    onClick={duplicateSelectedClip}
+                  >
+                    复制片段
+                  </Button>
+                  <Button size="small" icon={<ScissorOutlined />} disabled={!playheadSegment} onClick={splitClipAtPlayhead}>
+                    播放头切割
+                  </Button>
+                  <Button
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    disabled={!selectedClip}
+                    onClick={handleRippleDelete}
+                  >
+                    波纹删除
+                  </Button>
+                </Space>
+              </div>
+
+              <Space size={12} wrap>
+                <span className="text-[11px] text-[var(--af-muted)]">吸附</span>
+                <Switch
+                  size="small"
+                  checked={currentDocument.snapEnabled}
+                  onChange={(checked) => {
+                    commitDocument((current) => ({
+                      ...current,
+                      snapEnabled: checked,
+                    }), { recordHistory: false });
+                  }}
+                />
+                <span className="text-[11px] text-[var(--af-muted)]">Step</span>
+                <Select<number>
+                  size="small"
+                  value={currentDocument.snapStepSec}
+                  style={{ width: 110 }}
+                  onChange={(value) => {
+                    commitDocument((current) => ({
+                      ...current,
+                      snapStepSec: value,
+                    }), { recordHistory: false });
+                  }}
+                  options={[
+                    { value: 0.1, label: "0.1s" },
+                    { value: 0.25, label: "0.25s" },
+                    { value: 0.5, label: "0.5s" },
+                    { value: 1, label: "1.0s" },
+                  ]}
+                />
+              </Space>
+              <div className="mt-1.5 flex min-w-[220px] items-center gap-2">
+                <span className="text-[11px] text-[var(--af-muted)]">Zoom</span>
+                <Slider
+                  min={8}
+                  max={120}
+                  value={currentDocument.timelineZoom}
+                  onChange={(value) => {
+                    if (typeof value !== "number") return;
+                    commitDocument((current) => ({
+                      ...current,
+                      timelineZoom: value,
+                    }), { recordHistory: false });
+                  }}
+                />
+              </div>
+            </div>
+
+            <div
+              ref={timelineViewportRef}
+              onDragOver={handleTimelineDragOver}
+              onDragLeave={handleTimelineDragLeave}
+              onDrop={handleTimelineDrop}
+              className={`mt-2 overflow-x-auto rounded-[18px] border px-2 py-2 transition ${
+                isTimelineDragOver
+                  ? "border-emerald-400 bg-emerald-50/65"
+                  : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)]"
+              }`}
+            >
+              <div className="relative" style={{ minWidth: timelineTrackWidth }}>
+                <div
+                  className="mb-1.5 h-5 cursor-pointer overflow-hidden rounded-[10px] border border-[rgba(229,221,210,0.8)] bg-[rgba(255,255,255,0.7)]"
+                  onMouseDown={handleTimelineRulerMouseDown}
+                >
+                  {Array.from({ length: Math.max(2, Math.ceil(totalDuration) + 1) }, (_, tick) => (
+                    <div
+                      key={`tick-${tick}`}
+                      className="absolute top-0 h-6 border-l border-[rgba(124,114,102,0.18)] text-[9px] text-[var(--af-muted)]"
+                      style={{ left: tick * timelinePixelsPerSecond }}
+                    >
+                      {tick % 2 === 0 ? <span className="ml-1">{tick}s</span> : null}
+                    </div>
+                  ))}
+                  <div
+                    className="pointer-events-none absolute bottom-0 top-0 w-[2px] bg-[var(--af-accent)]"
+                    style={{ left: timelinePlayheadSec * timelinePixelsPerSecond }}
+                  />
+                </div>
+                <div className="mb-1 flex items-center gap-2">
+                  <Tag color="geekblue" style={{ margin: 0 }}>
+                    V1
+                  </Tag>
+                  <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
+                    主视频轨
+                  </Typography.Text>
+                </div>
+
+                {currentDocument.clips.length === 0 ? (
+                  <div className="flex h-24 items-center justify-center rounded-[16px] border border-dashed border-[rgba(229,221,210,0.9)] text-[12px] text-[var(--af-muted)]">
+                    时间线为空：从右侧素材栏拖拽视频到这里即可加入。
+                  </div>
+                ) : (
+                  <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+                    <SortableContext items={currentDocument.clips.map((clip) => clip.id)} strategy={horizontalListSortingStrategy}>
+                      <div className="flex min-w-max items-start gap-0">
+                        {timelineSegments.map((segment) => {
+                          const clip = segment.clip;
+                          const duration = Math.max(0, clip.outSec - clip.inSec);
+                          const width = Math.max(1, duration * timelinePixelsPerSecond);
+                          const compact = width < 300;
+                          return (
+                            <SortableClipBlock
+                              key={clip.id}
+                              clip={clip}
+                              index={segment.index}
+                              timelineStartSec={segment.startSec}
+                              timelineEndSec={segment.endSec}
+                              width={width}
+                              compact={compact}
+                              active={clip.id === currentDocument.selectedClipId}
+                            playing={isProgramPlaying
+                              ? programPlaybackIndex === segment.index
+                              : playheadSegment?.index === segment.index}
+                              onSelect={selectClip}
+                              onDelete={removeClip}
+                            />
+                          );
+                        })}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
+                )}
+              </div>
+            </div>
+          </div>
+          </Card>
+        </div>
+      </div>
+      </div>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] px-4 py-3">
         <div className="flex min-w-[280px] items-center gap-3">
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
