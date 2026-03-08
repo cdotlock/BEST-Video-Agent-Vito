@@ -39,7 +39,13 @@ export interface GenerateStoryboardGridResult {
   }>;
 }
 
-export type ClipTransition = "none" | "cut" | "fade";
+export type ClipTransition =
+  | "none"
+  | "cut"
+  | "fade"
+  | "dissolve"
+  | "wipe_left"
+  | "fade_black";
 
 export interface ClipPlanItemInput {
   id?: string | null;

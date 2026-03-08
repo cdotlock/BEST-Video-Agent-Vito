@@ -36,7 +36,7 @@
 - [RESEARCH_BASE.md](/Users/Clock/BEST-Video-Agent/test/video-eval/RESEARCH_BASE.md)
 - [cases/animation-short-core.md](/Users/Clock/BEST-Video-Agent/test/video-eval/cases/animation-short-core.md)
 - [cases/animation-short-diverse.md](/Users/Clock/BEST-Video-Agent/test/video-eval/cases/animation-short-diverse.md)
-- `reports/`
+- `reports/`（运行时产物，按需本地生成）
 
 ## 支持的评测模式
 
