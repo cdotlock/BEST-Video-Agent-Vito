@@ -29,6 +29,10 @@ import { z } from "zod";
 import type { DomainResources, DomainResource } from "../types";
 import { fetchJson } from "@/app/components/client-utils";
 import { inferReferenceRole, type VideoReferenceRole } from "@/lib/video/reference-roles";
+import {
+  buildClipAtlasDragPayload,
+  CLIP_ATLAS_DRAG_MIME,
+} from "@/lib/video/clip-drag";
 
 export interface ResourcePanelProps {
   resources: DomainResources | null;
@@ -39,7 +43,6 @@ export interface ResourcePanelProps {
   onAttachContextResource?: (resource: DomainResource) => void;
   onAttachStyleReference?: (resource: DomainResource) => void;
   onQueueClipResource?: (resource: DomainResource) => void;
-  onOpenStyleManager?: () => void;
   embedded?: boolean;
 }
 
@@ -62,19 +65,11 @@ const KeyResourceDetailSchema = z.object({
   url: z.string().nullable().optional(),
 });
 
-interface AtlasQuickAction {
-  id: string;
-  label: string;
-  hint: string;
-  kind: "inject" | "style" | "clip";
-  message?: string;
-}
-
 type RoleCountMap = Record<VideoReferenceRole, number>;
 
 function buildAsideClass(embedded: boolean): string {
-  if (embedded) return "ceramic-panel ceramic-resource-panel flex h-full w-full flex-col";
-  return "ceramic-panel ceramic-resource-panel flex h-full w-72 min-w-[240px] shrink-0 flex-col";
+  if (embedded) return "ceramic-panel ceramic-resource-panel flex min-h-0 h-full w-full flex-col overflow-hidden";
+  return "ceramic-panel ceramic-resource-panel flex min-h-0 h-full w-72 min-w-[240px] shrink-0 flex-col overflow-hidden";
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -291,82 +286,6 @@ function countAtlasRoles(resources: DomainResources | null): RoleCountMap {
   return counts;
 }
 
-function buildAtlasQuickActions(input: {
-  roleCounts: RoleCountMap;
-  imageCount: number;
-  videoCount: number;
-}): AtlasQuickAction[] {
-  const actions: AtlasQuickAction[] = [];
-
-  if (input.roleCounts.storyboard_ref === 0 && input.imageCount > 0) {
-    actions.push({
-      id: "storyboard-grid",
-      label: "补四宫格",
-      hint: "先扩探索面",
-      kind: "inject",
-      message: "请基于当前项目和现有素材，先做一轮四宫格分镜探索，确认镜头关系和节奏，再推进后续生成。",
-    });
-  }
-
-  if (input.roleCounts.first_frame_ref > 0 && input.roleCounts.last_frame_ref > 0) {
-    actions.push({
-      id: "first-last",
-      label: "首尾帧路线",
-      hint: "更受控的视频候选",
-      kind: "inject",
-      message: "请优先使用当前首帧和尾帧参考生成 2 到 3 条视频候选，并比较动作连贯性与收尾稳定性。",
-    });
-  } else if (input.roleCounts.first_frame_ref > 0) {
-    actions.push({
-      id: "first-frame",
-      label: "首帧视频",
-      hint: "快速推进视频",
-      kind: "inject",
-      message: "请优先使用当前首帧参考推进视频生成，必要时补尾帧或 mixed refs。",
-    });
-  }
-
-  if (input.roleCounts.character_ref === 0 && input.imageCount > 0) {
-    actions.push({
-      id: "character",
-      label: "补角色锚点",
-      hint: "先稳身份一致性",
-      kind: "inject",
-      message: "请优先整理或生成角色锚点，稳定人物身份特征后再继续视频生成。",
-    });
-  }
-
-  if (input.roleCounts.empty_shot_ref === 0) {
-    actions.push({
-      id: "empty-shot",
-      label: "补空镜",
-      hint: "给节奏呼吸",
-      kind: "inject",
-      message: "请补一组 scene_ref 和 empty_shot_ref，用来建立空间、气氛和转场节奏。",
-    });
-  }
-
-  if (input.videoCount >= 2) {
-    actions.push({
-      id: "rough-cut",
-      label: "进入粗剪",
-      hint: "组织候选片段",
-      kind: "clip",
-    });
-  }
-
-  if (input.roleCounts.style_ref === 0 && input.imageCount > 0) {
-    actions.push({
-      id: "style",
-      label: "补风格锚点",
-      hint: "建立 style_ref",
-      kind: "style",
-    });
-  }
-
-  return actions.slice(0, 5);
-}
-
 export function ResourcePanel({
   resources,
   isLoading,
@@ -376,7 +295,6 @@ export function ResourcePanel({
   onAttachContextResource,
   onAttachStyleReference,
   onQueueClipResource,
-  onOpenStyleManager,
   embedded = false,
 }: ResourcePanelProps) {
   const ASIDE_CLASS = buildAsideClass(embedded);
@@ -569,7 +487,7 @@ export function ResourcePanel({
       return;
     }
     onQueueClipResource(resource);
-    void message.success("已送入剪辑台。");
+    void message.success("已加入时间线。");
   }, [message, onQueueClipResource]);
 
   const handleRerollFromDetail = useCallback(async () => {
@@ -668,10 +586,20 @@ export function ResourcePanel({
     </div>
   );
 
-  const renderVideoItem = (resource: DomainResource) => (
+  const renderVideoItem = (resource: DomainResource) => {
+    const dragPayload = buildClipAtlasDragPayload(resource);
+
+    return (
     <div
       key={resource.id}
       className="group/card relative w-full overflow-hidden rounded-[18px] border border-[var(--af-border)] bg-[rgba(255,255,255,0.82)] text-left"
+      draggable={dragPayload !== null}
+      onDragStart={(event) => {
+        if (!dragPayload) return;
+        event.dataTransfer.effectAllowed = "copy";
+        event.dataTransfer.setData(CLIP_ATLAS_DRAG_MIME, JSON.stringify(dragPayload));
+        event.dataTransfer.setData("text/plain", dragPayload.title);
+      }}
       onClick={() => openDetail(resource)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -693,6 +621,11 @@ export function ResourcePanel({
       <div className="flex items-center justify-between gap-1 border-t border-[rgba(229,221,210,0.7)] px-2 py-1.5">
         <div className="truncate text-[11px] font-medium text-[var(--af-text)]">{resource.title ?? "视频素材"}</div>
         <div className="flex items-center gap-1">
+          {dragPayload ? (
+            <Tag color="green" style={{ margin: 0, fontSize: 10 }}>
+              拖入时间线
+            </Tag>
+          ) : null}
           {getReferenceRoleLabel(resource) ? (
             <Tag color="blue" style={{ margin: 0, fontSize: 10 }}>
               {getReferenceRoleLabel(resource)}
@@ -702,7 +635,8 @@ export function ResourcePanel({
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   const renderJsonItem = (resource: DomainResource) => {
     const text = stringifyResourceData(resource);
@@ -773,15 +707,6 @@ export function ResourcePanel({
     );
   }, [resources]);
 
-  const atlasQuickActions = useMemo(
-    () => buildAtlasQuickActions({
-      roleCounts,
-      imageCount: mediaCounts.image,
-      videoCount: mediaCounts.video,
-    }),
-    [mediaCounts.image, mediaCounts.video, roleCounts],
-  );
-
   const categoryKeys = useMemo(() => categories.map((g) => `cat-${g.category}`), [categories]);
   useEffect(() => {
     const newKeys = categoryKeys.filter((k) => !knownKeysRef.current.has(k));
@@ -851,22 +776,12 @@ export function ResourcePanel({
               <Typography.Text strong style={{ fontSize: 12 }}>Asset Atlas</Typography.Text>
               <div className="text-[10px] text-[var(--af-muted)]">角色化素材图谱</div>
             </div>
-            <div className="flex items-center gap-1">
-              <Button
-                size="small"
-                icon={<BgColorsOutlined />}
-                onClick={() => onOpenStyleManager?.()}
-                disabled={!onOpenStyleManager}
-              >
-                风格管理
-              </Button>
-              <Button
-                size="small"
-                icon={<ExpandOutlined />}
-                onClick={() => setExpandedOpen(true)}
-                title="展开素材"
-              />
-            </div>
+            <Button
+              size="small"
+              icon={<ExpandOutlined />}
+              onClick={() => setExpandedOpen(true)}
+              title="展开素材"
+            />
           </div>
           <div className="grid grid-cols-1 gap-2">
             <Input
@@ -916,51 +831,8 @@ export function ResourcePanel({
               </div>
             </div>
           </div>
-          {atlasQuickActions.length > 0 && (
-            <div className="mt-2">
-              <div className="mb-1 text-[10px] uppercase tracking-[0.16em] text-[var(--af-muted)]">Quick Routes</div>
-              <div className="grid grid-cols-1 gap-2">
-                {atlasQuickActions.map((action) => (
-                  <button
-                    key={action.id}
-                    type="button"
-                    className="director-action-button"
-                    onClick={() => {
-                      if (action.kind === "inject" && action.message && onInjectMessage) {
-                        onInjectMessage(action.message);
-                        void message.success("已把路线指令送入导演台。");
-                        return;
-                      }
-                      if (action.kind === "style") {
-                        onOpenStyleManager?.();
-                        return;
-                      }
-                      if (action.kind === "clip") {
-                        const candidate = resources?.categories
-                          .flatMap((group) => group.items)
-                          .find((item) => item.mediaType === "video" && item.url);
-                        if (candidate) {
-                          handleQueueClip(candidate);
-                        } else {
-                          void message.warning("还没有可送入粗剪的视频。");
-                        }
-                      }
-                    }}
-                    disabled={
-                      (action.kind === "inject" && (!onInjectMessage || !action.message))
-                      || (action.kind === "style" && !onOpenStyleManager)
-                      || (action.kind === "clip" && !onQueueClipResource)
-                    }
-                  >
-                    <span className="font-medium">{action.label}</span>
-                    <span className="text-[10px] text-[var(--af-muted)]">{action.hint}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
-        <div className="flex-1 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {collapseItems.length === 0 ? (
             <div className="flex h-full items-center justify-center px-2 text-center text-[11px] text-slate-500">
               当前筛选下没有素材。
@@ -1072,7 +944,7 @@ export function ResourcePanel({
                                 icon={<ScissorOutlined />}
                                 onClick={() => handleQueueClip(resource)}
                               >
-                                加入粗剪
+                                加入时间线
                               </Button>
                             )}
                             {isImage && resource.url && (
@@ -1183,7 +1055,7 @@ export function ResourcePanel({
                   )}
                   {selectedResource.mediaType === "video" && selectedResource.url && (
                     <Button icon={<ScissorOutlined />} onClick={() => handleQueueClip(selectedResource)}>
-                      加入粗剪
+                      加入时间线
                     </Button>
                   )}
                   {selectedResource.mediaType === "image" && selectedResource.url && (

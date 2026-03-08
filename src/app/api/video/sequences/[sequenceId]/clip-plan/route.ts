@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { saveClipPlan } from "@/lib/services/video-composition-service";
 
-const ClipTransitionSchema = z.enum(["none", "cut", "fade"]);
+const ClipTransitionSchema = z.enum([
+  "none",
+  "cut",
+  "fade",
+  "dissolve",
+  "wipe_left",
+  "fade_black",
+]);
 const MonitorModeSchema = z.enum(["source", "program"]);
 
 const SaveClipPlanSchema = z.object({

@@ -89,13 +89,11 @@
    - 项目名 / Workspace capsule
    - `Checkpoint / YOLO`
    - `Chat / Clip`
-   - `Style`
-   - `Pro`
 2. 中间主舞台
-   - 顶部 `Director Console`
+   - 顶部 `灵动岛`
    - Chat 导演台或 Clip Studio
 3. 右侧资产图谱
-   - 顶部 `Resource Mix / Semantic Roles / Quick Routes`
+   - 顶部 `Resource Mix / Semantic Roles`
    - 按媒体维度组织
    - 按 Agent 命名 Group 展示
    - Inspector 详情抽屉
@@ -118,15 +116,18 @@
 4. 组织素材引用
 5. 驱动整个工作流
 
-`Director Console` 约定：
+`灵动岛（Dynamic Island）` 约定：
 
-1. 它是运行态监控与导演编排区，不替代 `Pro`
-2. 默认应可收起，只保留紧凑监控条，避免遮挡主工作区
-3. 展开后同时展示：
+1. 它是运行态监控与导演编排区，不替代素材图谱；`Pro` 叠层也收入这里的展开态
+2. 默认应压缩为单条状态岛，只保留当前最重要状态、提示和进度，不得遮挡主工作区
+3. 点击后以带动画的浮层展开，而不是覆盖式大板块
+4. 展开后同时展示：
    - Agent 当前运行态
    - 当前路径主轴与 next cue
    - 当前还缺什么素材/语义锚点
    - 可直接触发的高价值导演动作
+   - 当前阶段进度与最近一次关键推进
+   - `Pro / Atelier / Memory / Capabilities` 等专业叠层
 
 ## 4.2 消息类型
 
@@ -183,7 +184,7 @@ Checkpoint 模式的首轮不能直接执行，必须至少覆盖：
 3. 模式提示
 4. 图片上传入口
 5. 清晰的主发送按钮
-6. 与上方 `Director Console` 快速编排动作一致的自然语言执行入口
+6. 与上方 `灵动岛` 快速编排动作一致的自然语言执行入口
 
 可增强但不喧宾夺主：
 
@@ -215,8 +216,8 @@ Checkpoint 模式的首轮不能直接执行，必须至少覆盖：
 当前实现约定：
 
 1. Asset Atlas 顶部先显示 `Resource Mix` 与 `Semantic Roles`
-2. `Quick Routes` 将常见高价值路径显式化，例如补四宫格、走首尾帧、补空镜、进入粗剪
-3. 这些快速路径只是导演动作的快捷入口，不是隐藏黑盒流程
+2. 常见高价值路径统一移入 `灵动岛`，避免右栏与主舞台重复抢指挥权
+3. 右栏必须可滚动，素材堆高后仍能完整浏览与检查
 
 ## 5.2 Gallery 规格
 
@@ -258,14 +259,13 @@ Inspector 至少包含：
 
 ## 6. Style 与 Pro
 
-## 6.1 右上角入口
+## 6.1 入口原则
 
-右上角固定两个入口：
+顶栏不再保留独立 `Style / Pro` 双入口。
 
-1. `Style`
-2. `Pro`
-
-不再在主区放大量“工作流定制”按钮。
+1. `Style` 初始化与风格整理通过 `灵动岛` 或素材 Inspector 触发
+2. `Pro` 固定收进 `灵动岛` 展开态，作为专业策略层，而不是单独悬浮抽屉入口
+3. 任意能力只保留一个主入口，禁止重复出现造成认知噪音
 
 ## 6.2 Style
 
@@ -299,7 +299,7 @@ Pro 是高级配置面板，但不暴露源码编辑。
 
 当前实现约定：
 
-1. `Pro` 已按 `Knowledge / Templates / Atelier / Memory / Review / Capabilities` 六层抽屉落地
+1. `Pro` 已按 `Knowledge / Templates / Atelier / Memory / Review / Capabilities` 六层内嵌叠层落地
 2. `Atelier` 以显式导演杠杆组织 workflow，而不是逼用户手写整段 prompt
 3. `Memory` tab 直接展示长期偏好摘要、路径推荐、剪辑偏好、镜头语言偏好与模型偏好
 4. `Capabilities` tab 仅展示绑定的 MCP / Skill / Prompt Compiler layer
@@ -312,16 +312,16 @@ Clip 不应再是“表单式片段列表”，而要成为专业粗剪台。
 
 ## 7.2 心智模型
 
-参考 `openreel-video` 的编辑器布局：
+参考 `openreel-video` 与 `Romantic Cinematic Editor` 的编辑器布局，但继续保留当前页面右侧 `Asset Atlas`，不在剪辑主舞台内部再复制一套素材栏：
 
-1. `Source Monitor`
-   - 查看单素材，设入点/出点
-2. `Program Monitor`
-   - 预览当前粗剪结果
-3. `Timeline`
-   - 时间线拖拽排序、裁切、吸附
-4. `Inspector`
-   - 当前片段参数与转场设置
+1. 右侧 `Media & Assets`
+   - 浏览视频 / 图片 / JSON / 风格与分镜资源
+2. 中上 `Preview`
+   - 承接时间线当前 playhead 对应画面
+3. 左侧 `Inspector`
+   - 当前片段参数、对白节奏与文本确认
+4. 底部 `Timeline`
+   - 时间线拖拽排序、裁切、吸附、时间刻度、缩放（首期以主视频轨为核心，预留多轨扩展）
 
 首期能力红线：
 
@@ -333,11 +333,22 @@ Clip 不应再是“表单式片段列表”，而要成为专业粗剪台。
 
 当前实现约定：
 
-1. `Clip Studio` 已落成 `Source Monitor + Program Monitor + Timeline + Inspector`
-2. 自动保存通过 `clip-plan timeline_v2 + editorState` 持久化
-3. 若服务器已有 clip plan，则优先恢复；否则回退到本地草稿或现有视频候选起稿
-4. `加入粗剪` 的资产动作会把视频直接送入当前时间线，形成 Asset Atlas -> Clip Studio 的闭环
-5. 手动保存后会主动写回路径评审与编辑偏好，作为后续路径推荐和上下文组装输入
+1. `Clip Studio` 已收口为 `左侧 Properties & Effects / 中央 Preview + Timeline Stage / 页面右侧 Asset Atlas`
+2. 中央主舞台采用接近剪映 / iMovie 的工作台模式：左侧小 Inspector + 右侧中上 Preview + 右侧下方 Timeline，三者位置关系固定，不因宽比换位
+3. 自动保存通过 `clip-plan timeline_v2 + editorState` 持久化
+4. 若服务器已有 clip plan，则优先恢复；否则回退到本地草稿或现有视频候选起稿
+5. 进入剪辑时，现有视频候选应默认按顺序进入时间线起稿；`加入粗剪` 的资产动作仍可继续把单条视频送入当前时间线，形成 Asset Atlas -> Clip Studio 的闭环
+6. 时间尺必须支持 click / drag scrub，并驱动 playhead、当前片段与 Preview Monitor 联动
+7. 手动保存后会主动写回路径评审与编辑偏好，作为后续路径推荐和上下文组装输入
+8. 时间线首期已提供 `播放头切割（Split）` 与 `波纹删除（Ripple Delete）` 的显式动作，避免“假轨道”观感
+9. 提供 `AI 自动粗剪` 一键能力：按现有视频候选自动生成粗剪序列并应用基础转场预设（Cut / Fade / Dissolve / Wipe Left / Fade Black）
+
+## 7.4 对白脚本确认层
+
+1. 故事型任务默认允许 Agent 先生成 `对白脚本 JSON`
+2. 对白脚本在 Asset Atlas 中作为 `JSON` 资源单独确认与编辑
+3. 视频生成时再把对白脚本按剧情与镜头上下文拼装进隐藏运行时 prompt
+4. 用户看到的“视频 prompt”和“对白脚本”必须分离展示
 
 ## 7.3 架构原则
 

@@ -210,9 +210,10 @@ Review 结论要么：
 
 当前实现约定：
 
-1. 项目页主舞台顶部新增 `Director Console`，显式展示运行态、路径轨道、素材语义与快速编排动作
-2. `Pro` 新增 `Atelier` 层，把分镜密度、参考路线、角色/空镜/对白/粗剪策略转成导演蓝图
-3. `Capabilities + Director Console + Atelier` 三层共同承担“高上限但不暴露源码”的交互边界
+1. 项目页主舞台顶部新增 `灵动岛（Dynamic Island）`，默认是单条动态状态岛，显式展示运行态、路径轨道、当前 cue、缺口提示与关键进度
+2. `灵动岛` 展开后同时承载运行监控、导演编排与 `Pro` 叠层，不再把 `Pro` 作为独立重复入口悬挂在顶栏
+3. `Pro` 新增 `Atelier` 层，把分镜密度、参考路线、角色/空镜/对白/粗剪策略转成导演蓝图
+4. `Capabilities + 灵动岛 + Atelier` 三层共同承担“高上限但不暴露源码”的交互边界
 
 ## 5.7 资产系统
 
@@ -233,8 +234,8 @@ Review 结论要么：
 
 当前实现约定：
 
-1. Asset Atlas 顶部会先归纳 `Resource Mix + Semantic Roles + Quick Routes`
-2. `Quick Routes` 只封装高价值导演动作，例如补四宫格、首尾帧、补空镜、进入粗剪
+1. Asset Atlas 顶部会先归纳 `Resource Mix + Semantic Roles`
+2. 高价值导演动作统一收口到 `灵动岛`，避免右栏与主舞台重复指挥
 3. 资源语义仍以 `semanticRole` 写回资源数据，保持可 recall 与可复用
 6. `usage`
    - 被注入上下文次数、被设为风格参考次数、被加入粗剪次数
@@ -247,11 +248,12 @@ Review 结论要么：
 
 需要借鉴 `openreel-video` 的不是视觉皮肤，而是编辑器心智：
 
-1. Source Monitor
-2. Program Monitor
-3. Timeline
-4. Inspector
+1. 右侧 `Media & Assets`
+2. 中上 `Preview`
+3. 左侧 `Inspector / Properties`
+4. 底部 `Timeline`
 5. 可拖拽、可裁切、可串播、可恢复
+6. 继续复用页面右侧 Asset Atlas，不在剪辑主舞台内部再复制另一套素材栏
 
 结合方式：
 
@@ -263,7 +265,12 @@ Review 结论要么：
 
 1. Clip plan 已升级为 `timeline_v2` 持久化结构
 2. 同时写入 `editorState`，用于自动保存、跨会话恢复与继续编辑
-3. 复用边界已明确：吸收 `openreel-video` 的四区心智与编辑状态思路，不引入其整套渲染/导出栈，继续保持 `Next.js + Ant Design + domain_resources` 主壳
+3. `Clip Studio` 工作台固定为 `左侧 Properties & Effects + 中央 Preview/Timeline Stage + 页面右侧 Asset Atlas`
+4. 中央主舞台进一步细分为 `中上 Preview Monitor + 下方全宽 Timeline`
+5. 时间线主舞台不再采用纵向堆叠卡片，而要接近剪映 / iMovie 的工作区形态：紧凑工具栏、可 scrub 的时间尺、主视频轨时间流（预留多轨扩展）与导出收口
+6. 首期时间线已明确提供 `Split at Playhead + Ripple Delete`，并保留拖拽重排、裁切与串播预览
+7. 首期补充 `AI 自动粗剪`：基于候选视频自动生成粗剪草案并直接应用基础转场预设（Cut / Fade / Dissolve / Wipe Left / Fade Black）
+8. 复用边界已明确：吸收 `openreel-video` 的四区心智与编辑状态思路，不引入其整套渲染/导出栈，继续保持 `Next.js + Ant Design + domain_resources` 主壳
 
 ## 6. 用户主线
 
@@ -292,7 +299,7 @@ Review 结论要么：
 
 1. 主交互始终在中间 Chat，不恢复左侧控制边栏。
 2. 右侧资产区是素材与风格的统一入口。
-3. 右上角保留 `Style` 与 `Pro` 两个高级入口。
+3. 高级入口统一收口到 `灵动岛` 展开层，而不是继续在右上角分裂多个入口。
 4. `checkpoint` 与 `yolo` 保留，但作为上下文偏好注入。
 5. 视觉必须达到专业工具水准，且统一纳入 Ant Design 设计系统。
 
@@ -303,6 +310,15 @@ Review 结论要么：
 3. 多次使用后，系统能明显体现用户偏好记忆。
 4. 资产引用、风格引用、分镜引用、对白引用均能稳定进入上下文。
 5. 剪辑台从“表单”升级为接近专业编辑器的粗剪体验。
+
+## 5.9 对白脚本确认层
+
+对白不是附属说明，而是独立产物。
+
+1. 故事型任务默认允许 Agent 先生成 `dialogue_script` JSON 草稿。
+2. 用户应能像确认分镜或剪辑计划一样，单独确认与编辑对白脚本。
+3. 对白脚本在 UI 中与视频 prompt 分开展示，避免创作说明和口播内容混杂。
+4. 在真实生成阶段，系统要根据剧情、镜头与对白脚本，把台词组装进隐藏运行时 prompt，而不是要求用户每次手抄。
 
 ## 9. 外部参考
 

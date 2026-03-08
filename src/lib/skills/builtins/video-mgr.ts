@@ -23,6 +23,7 @@ requires_mcps:
 ### generate_image — 文生图（带生命周期管理）
 
 每次调用记录 prompt、URL 和版本历史。同一 key 再次调用会创建新版本而非新图片。生成成功后系统自动写入 domain_resources，无需手动 INSERT。
+在视频工作台上下文中，provider 会自动把 prompt 提升为更适合动画短片的导演级 runtime prompt：补齐 style refs、连续性锚点、角色分工和镜头工艺约束。
 
 - \`key\` — 语义唯一标识。命名规范：\`char_{name}_portrait\`、\`scene_{n}_bg\`、\`shot_{scene}_{shot}\`、\`costume_{name}_{ep}\`，其他用描述性英文下划线连接
 - \`category\` — 自由命名（如 \`角色立绘\`、\`场景\`、\`分镜\`），决定 UI 资源面板分组
@@ -47,14 +48,16 @@ requires_mcps:
 - \`mixed_refs\`：图/视频混合参考（以图参考为主，视频参考作为语义约束）
 
 无论是否实际生成视频，都会写入 domain_resources（mediaType=video）并保留完整参数快照，便于复盘与再生。
+在视频工作台上下文中，provider 会自动补入动画短片约束：单镜头单主动作、角色一致性、style refs、对白节奏和镜头连续性。
 
 ### generate_storyboard_grid — 四宫格/九宫格分镜
 
 输入 \`layout=grid_2x2|grid_3x3\` 和 cell prompts：
 
 1. 每个 cell 自动调用文生图
-2. 生成后自动保存网格计划 JSON（type=storyboard_grid）
-3. 可作为后续图生视频参考资产
+2. 每个 cell 会被重写成更适合分镜探索的 runtime prompt，优先保证镜头可读性和 cut value
+3. 生成后自动保存网格计划 JSON（type=storyboard_grid）
+4. 可作为后续图生视频参考资产
 
 ### save_clip_plan — 最简剪辑计划
 

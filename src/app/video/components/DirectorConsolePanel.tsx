@@ -7,14 +7,14 @@ import {
   BranchesOutlined,
   CloseOutlined,
   DownOutlined,
-  RadarChartOutlined,
+  FireOutlined,
   RightOutlined,
-  ScissorOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
-import { Button, Spin, Typography } from "antd";
+import { Button, Progress, Spin, Tabs, Typography } from "antd";
 import { fetchJson } from "@/app/components/client-utils";
 import { inferReferenceRole, type VideoReferenceRole } from "@/lib/video/reference-roles";
+import { ProSettingsPanel } from "./ProSettingsPanel";
 import type {
   DomainResources,
   ExecutionMode,
@@ -57,7 +57,8 @@ interface DirectorConsolePanelProps {
   capabilityMcps?: string[];
   onInjectMessage: (text: string) => void;
   onOpenStyle: () => void;
-  onOpenPro: () => void;
+  onApplyPro: (next: { memoryUser: string; config: VideoProConfig }) => void;
+  onGenerateDialogueScript?: () => void;
   onSwitchToClip: () => void;
 }
 
@@ -77,7 +78,7 @@ interface CurrentCue {
 }
 
 type GapSeverity = "critical" | "warn" | "soft";
-type GapActionKind = "inject" | "style" | "pro" | "clip";
+type GapActionKind = "inject" | "style" | "pro" | "clip" | "dialogue";
 type StoryboardDensity = "single" | "grid_2x2" | "grid_3x3";
 type PillTone = "neutral" | "accent" | GapSeverity;
 
@@ -99,6 +100,20 @@ interface ConsoleAction {
   description: string;
   kind: GapActionKind;
   prompt?: string;
+}
+
+interface ProgressStage {
+  id: string;
+  label: string;
+  detail: string;
+  status: "done" | "active" | "todo" | "optional";
+}
+
+interface ProgressState {
+  percent: number;
+  summary: string;
+  currentStageLabel: string;
+  stages: ProgressStage[];
 }
 
 const ISLAND_BAR_STYLE: CSSProperties = {
@@ -356,6 +371,19 @@ function buildGapItems(input: {
     });
   }
 
+  if (insights.roleCounts.dialogue_ref === 0 && hasKeyword(configText, ["对白", "台词", "dialogue", "口播", "独白"])) {
+    gaps.push({
+      id: "dialogue",
+      shortLabel: "差台词",
+      label: "缺少对白确认稿",
+      detail: "故事已经带有对白信号，建议先生成对白脚本 JSON，确认后再让视频围绕台词组织。",
+      cue: "先补对白脚本确认稿，再推进镜头生成",
+      severity: "warn",
+      actionLabel: "生成台词稿",
+      actionKind: "dialogue",
+    });
+  }
+
   if (contextMaterialCount === 0 && executionMode === "checkpoint" && !hasKeyword(configText, ["目标", "剧情", "场景"])) {
     gaps.push({
       id: "context",
@@ -438,6 +466,88 @@ function buildCurrentCue(input: {
   };
 }
 
+function buildProgressState(input: {
+  insights: ResourceInsights;
+  workspaceView: WorkspaceView;
+  contextMaterialCount: number;
+  configText: string;
+}): ProgressState {
+  const wantsDialogue = hasKeyword(input.configText, ["对白", "台词", "dialogue", "口播", "独白"]);
+  const stages: ProgressStage[] = [
+    {
+      id: "alignment",
+      label: "导演对齐",
+      detail: "目标、风格和交付物开始成形",
+      status: input.contextMaterialCount > 0 || input.configText.trim().length > 0 || input.insights.totalAssets > 0
+        ? "done"
+        : "active",
+    },
+    {
+      id: "storyboard",
+      label: "分镜探索",
+      detail: "先把镜头范围拉开再收敛",
+      status: input.insights.roleCounts.storyboard_ref > 0 ? "done" : "todo",
+    },
+    {
+      id: "anchors",
+      label: "语义锚点",
+      detail: "角色、空镜、关键帧开始稳定",
+      status: (
+        input.insights.roleCounts.character_ref
+        + input.insights.roleCounts.empty_shot_ref
+        + input.insights.roleCounts.scene_ref
+        + input.insights.roleCounts.first_frame_ref
+        + input.insights.roleCounts.last_frame_ref
+      ) > 0
+        ? "done"
+        : "todo",
+    },
+    {
+      id: "dialogue",
+      label: "对白确认",
+      detail: wantsDialogue ? "对白脚本需要先确认" : "当前对白需求较低",
+      status: wantsDialogue
+        ? (input.insights.roleCounts.dialogue_ref > 0 ? "done" : "todo")
+        : "optional",
+    },
+    {
+      id: "video",
+      label: "视频候选",
+      detail: "开始进入视频生成与候选比较",
+      status: input.insights.videoCount > 0 ? "done" : "todo",
+    },
+    {
+      id: "clip",
+      label: "时间线收口",
+      detail: "进入粗剪台组织节奏与镜头",
+      status: input.workspaceView === "clip" && input.insights.videoCount > 0 ? "done" : "todo",
+    },
+  ];
+
+  const visibleStages = stages.filter((stage) => stage.status !== "optional");
+  const firstIncomplete = visibleStages.find((stage) => stage.status !== "done") ?? null;
+  const percent = Math.round(
+    (visibleStages.filter((stage) => stage.status === "done").length / Math.max(1, visibleStages.length)) * 100,
+  );
+
+  return {
+    percent,
+    summary: firstIncomplete
+      ? `下一阶段：${firstIncomplete.label}`
+      : "主流程已经成型，可以继续打磨和收口",
+    currentStageLabel: firstIncomplete?.label ?? "已进入收口",
+    stages: stages.map((stage, index) => {
+      if (stage.status === "todo" && firstIncomplete && stage.id === firstIncomplete.id) {
+        return { ...stage, status: "active" };
+      }
+      if (stage.status === "todo" && index === 0 && !firstIncomplete) {
+        return { ...stage, status: "active" };
+      }
+      return stage;
+    }),
+  };
+}
+
 function buildActionDeck(input: {
   gaps: GapItem[];
   insights: ResourceInsights;
@@ -509,10 +619,12 @@ export function DirectorConsolePanel({
   capabilityMcps = [],
   onInjectMessage,
   onOpenStyle,
-  onOpenPro,
+  onApplyPro,
+  onGenerateDialogueScript,
   onSwitchToClip,
 }: DirectorConsolePanelProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<"monitor" | "pro">("monitor");
   const [isLoadingIntel, setIsLoadingIntel] = useState(false);
   const [memorySummary, setMemorySummary] = useState<MemoryRecommendations | null>(null);
   const [pathSummary, setPathSummary] = useState<WorkflowPathRecommendationsResult | null>(null);
@@ -542,11 +654,15 @@ export function DirectorConsolePanel({
     () => buildActionDeck({ gaps, insights, workspaceView }),
     [gaps, insights, workspaceView],
   );
+  const progress = useMemo(
+    () => buildProgressState({ insights, workspaceView, contextMaterialCount, configText }),
+    [configText, contextMaterialCount, insights, workspaceView],
+  );
   const tone = useMemo(() => buildStatusTone(gaps), [gaps]);
 
   const topGap = gaps[0];
   const compactHint = topGap?.shortLabel ?? (insights.videoCount > 0 ? "可进粗剪" : "可继续推进");
-  const compactStatus = sessionId ? "会话已连线" : "等待首条导演指令";
+  const compactStatus = sessionId ? "在线" : "待起步";
   const panelId = useMemo(
     () => `director-island-${storageKey.replace(/[^a-zA-Z0-9_-]+/g, "-")}`,
     [storageKey],
@@ -554,6 +670,7 @@ export function DirectorConsolePanel({
 
   useEffect(() => {
     setIsOpen(false);
+    setActiveTab("monitor");
   }, [storageKey]);
 
   useEffect(() => {
@@ -632,21 +749,27 @@ export function DirectorConsolePanel({
   ]);
 
   const runAction = (action: ConsoleAction) => {
-    setIsOpen(false);
-
     if (action.kind === "style") {
+      setIsOpen(false);
       onOpenStyle();
       return;
     }
     if (action.kind === "pro") {
-      onOpenPro();
+      setActiveTab("pro");
+      setIsOpen(true);
+      return;
+    }
+    if (action.kind === "dialogue") {
+      onGenerateDialogueScript?.();
       return;
     }
     if (action.kind === "clip") {
+      setIsOpen(false);
       onSwitchToClip();
       return;
     }
     if (action.prompt) {
+      setIsOpen(false);
       onInjectMessage(action.prompt);
     }
   };
@@ -670,7 +793,7 @@ export function DirectorConsolePanel({
             />
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-[var(--af-muted)]">
-                <span>Agent Island</span>
+                <span>灵动岛</span>
                 <span className="hidden md:inline">{compactStatus}</span>
               </div>
               <div className="truncate text-sm font-semibold text-[var(--af-text)]">{currentCue.title}</div>
@@ -678,12 +801,13 @@ export function DirectorConsolePanel({
           </div>
 
           <div className="hidden min-w-0 flex-1 items-center justify-end gap-2 md:flex">
-            <ConsolePill>{workspaceView === "clip" ? "剪辑监看" : "对话导演"}</ConsolePill>
+            <ConsolePill>{progress.currentStageLabel}</ConsolePill>
             <ConsolePill tone="accent">{compactHint}</ConsolePill>
+            <ConsolePill>{progress.percent}%</ConsolePill>
           </div>
 
           <div className="flex items-center gap-2 text-[var(--af-brand)]">
-            <span className="hidden text-xs font-medium sm:inline">展开监控台</span>
+            <span className="hidden text-xs font-medium sm:inline">展开浮层</span>
             <DownOutlined className={`text-xs transition-transform ${isOpen ? "rotate-180" : ""}`} />
           </div>
         </button>
@@ -691,7 +815,7 @@ export function DirectorConsolePanel({
         <section
           id={panelId}
           role="dialog"
-          aria-label="Director Console"
+          aria-label="灵动岛"
           aria-hidden={!isOpen}
           className={`absolute left-1/2 top-[62px] z-20 w-[min(calc(100vw-48px),860px)] -translate-x-1/2 overflow-hidden rounded-[30px] transition duration-200 md:w-[min(calc(100%-24px),860px)] ${
             isOpen
@@ -705,15 +829,16 @@ export function DirectorConsolePanel({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <Typography.Text strong style={{ fontSize: 18, color: "var(--af-text)" }}>
-                    Director Console
+                    灵动岛
                   </Typography.Text>
                   <ConsolePill>Agent Monitor</ConsolePill>
                   <ConsolePill tone="accent">
                     {executionMode === "yolo" ? "YOLO 自动推进" : "Checkpoint 对齐优先"}
                   </ConsolePill>
+                  <ConsolePill>{progress.currentStageLabel}</ConsolePill>
                 </div>
                 <Typography.Paragraph style={{ margin: "6px 0 0", color: "var(--af-muted)", fontSize: 12 }}>
-                  这里看当前局面、缺口和下一步导演动作。Pro 仍负责长期知识、模板和记忆。
+                  收起时它只提示当前最重要信息；展开后它是 Agent 监控台、导演编排台，也是 Pro 的专业策略层。
                 </Typography.Paragraph>
               </div>
 
@@ -727,208 +852,247 @@ export function DirectorConsolePanel({
             className="overflow-y-auto px-4 py-4 md:px-5"
             style={{ maxHeight: "calc(min(38rem, calc(100dvh - 220px)) - 74px)" }}
           >
-            <div className="grid gap-3 xl:grid-cols-[1.05fr_1fr_1fr]">
-              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
-                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                  <RadarChartOutlined />
-                  <span>Agent Pulse</span>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <ConsolePill>{workspaceLabel ?? "工作区未初始化"}</ConsolePill>
-                  <ConsolePill>{sessionId ? "会话已连接" : "等待起步"}</ConsolePill>
-                  <ConsolePill>memory:{memoryUser}</ConsolePill>
-                </div>
-                <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
-                  <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
-                    <span className="block text-[11px] text-[var(--af-muted)]">素材</span>
-                    <strong className="mt-1 block text-base text-[var(--af-text)]">{insights.totalAssets}</strong>
-                  </div>
-                  <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
-                    <span className="block text-[11px] text-[var(--af-muted)]">锚点覆盖</span>
-                    <strong className="mt-1 block text-base text-[var(--af-text)]">
-                      {insights.anchorCoverage}/{REFERENCE_ROLES.length}
-                    </strong>
-                  </div>
-                  <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
-                    <span className="block text-[11px] text-[var(--af-muted)]">图 / 视频</span>
-                    <strong className="mt-1 block text-base text-[var(--af-text)]">
-                      {insights.imageCount}/{insights.videoCount}
-                    </strong>
-                  </div>
-                  <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
-                    <span className="block text-[11px] text-[var(--af-muted)]">Skills / MCP</span>
-                    <strong className="mt-1 block text-base text-[var(--af-text)]">
-                      {capabilitySkills.length}/{capabilityMcps.length}
-                    </strong>
-                  </div>
-                </div>
-              </section>
-
-              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
-                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                  <BranchesOutlined />
-                  <span>Current Cue</span>
-                </div>
-                <div className="mt-3">
-                  <Typography.Text strong style={{ fontSize: 17 }}>
-                    {currentCue.title}
-                  </Typography.Text>
-                  <Typography.Paragraph style={{ margin: "10px 0 0", color: "var(--af-muted)", fontSize: 13 }}>
-                    {currentCue.summary}
-                  </Typography.Paragraph>
-                  <div className="mt-2">
-                    <ConsolePill>{currentCue.routeLabel}</ConsolePill>
-                  </div>
-                </div>
-              </section>
-
-              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
-                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                  <ThunderboltOutlined />
-                  <span>Gap Radar</span>
-                </div>
-                {gaps.length === 0 ? (
-                  <Typography.Paragraph style={{ margin: "14px 0 0", color: "var(--af-muted)", fontSize: 13 }}>
-                    现场锚点已经比较完整，可以继续推进生成或直接进入粗剪。
-                  </Typography.Paragraph>
-                ) : (
-                  <div className="mt-3 space-y-3">
-                    {gaps.slice(0, 4).map((gap, index) => (
-                      <div
-                        key={gap.id}
-                        className={`pt-3 ${index === 0 ? "pt-0" : "border-t border-[rgba(229,221,210,0.68)]"}`}
-                      >
-                        <ConsolePill tone={gap.severity}>{gap.label}</ConsolePill>
-                        <Typography.Paragraph style={{ margin: "8px 0 0", fontSize: 12, color: "var(--af-muted)" }}>
-                          {gap.detail}
-                        </Typography.Paragraph>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
-            </div>
-
-            <div className="mt-3 grid gap-3 xl:grid-cols-[1.2fr_1fr]">
-              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
-                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                  <RightOutlined />
-                  <span>Action Deck</span>
-                </div>
-                <div className="mt-3 grid gap-2 md:grid-cols-2">
-                  {actionDeck.map((action) => (
-                    <button
-                      key={action.key}
-                      type="button"
-                      className="director-action-button"
-                      onClick={() => runAction(action)}
-                    >
-                      <span className="text-[14px] font-semibold">{action.title}</span>
-                      <span className="text-[12px] text-[var(--af-muted)]">{action.description}</span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-
-              <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
-                <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                  <BookOutlined />
-                  <span>Route Intel</span>
-                </div>
-
-                {isLoadingIntel ? (
-                  <div className="flex min-h-[180px] items-center justify-center">
-                    <Spin size="small" />
-                  </div>
-                ) : (
-                  <div className="mt-3 space-y-3">
-                    <div>
-                      <Typography.Text strong style={{ fontSize: 13 }}>
-                        路径建议
-                      </Typography.Text>
-                      {pathSummary && pathSummary.recommendations.length > 0 ? (
-                        <div className="mt-2 space-y-2">
-                          {pathSummary.recommendations.slice(0, 3).map((item) => (
-                            <div
-                              key={item.pathId}
-                              className="border-l-2 border-[rgba(47,107,95,0.18)] pl-2.5"
-                            >
-                              <div className="flex items-center gap-2">
-                                <ConsolePill>{item.title}</ConsolePill>
-                                <span className="text-[11px] text-[var(--af-muted)]">{item.score.toFixed(1)}</span>
-                              </div>
-                              {item.why[0] && (
-                                <p className="mt-1 text-[12px] text-[var(--af-muted)]">{item.why[0]}</p>
-                              )}
+            <Tabs
+              size="small"
+              activeKey={activeTab}
+              onChange={(value) => {
+                if (value === "monitor" || value === "pro") {
+                  setActiveTab(value);
+                }
+              }}
+              items={[
+                {
+                  key: "monitor",
+                  label: "Monitor",
+                  children: (
+                    <div className="space-y-3">
+                      <section className="rounded-[26px] p-4" style={ISLAND_CARD_STYLE}>
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                          <div className="max-w-2xl">
+                            <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                              <FireOutlined />
+                              <span>Current Mission</span>
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="mt-2 text-[12px] text-[var(--af-muted)]">
-                          暂无额外路径偏置，当前主要按现场素材与缺口判断。
-                        </p>
-                      )}
-                    </div>
+                            <Typography.Text strong style={{ display: "block", marginTop: 10, fontSize: 18 }}>
+                              {currentCue.title}
+                            </Typography.Text>
+                            <Typography.Paragraph style={{ margin: "10px 0 0", color: "var(--af-muted)", fontSize: 13 }}>
+                              {currentCue.summary}
+                            </Typography.Paragraph>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <ConsolePill>{workspaceLabel ?? "工作区未初始化"}</ConsolePill>
+                              <ConsolePill>{workspaceView === "clip" ? "剪辑主舞台" : "导演对话台"}</ConsolePill>
+                              <ConsolePill>memory:{memoryUser}</ConsolePill>
+                              <ConsolePill>{sessionId ? "会话已连接" : "待首条指令"}</ConsolePill>
+                            </div>
+                          </div>
 
-                    <div>
-                      <Typography.Text strong style={{ fontSize: 13 }}>
-                        长期偏好提醒
-                      </Typography.Text>
-                      {memorySummary && memorySummary.totalPreferenceItems > 0 ? (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {memorySummary.preferredWorkflowPaths.slice(0, 2).map((item) => (
-                            <ConsolePill key={item}>{item}</ConsolePill>
-                          ))}
-                          {memorySummary.preferredEditingHints.slice(0, 2).map((item) => (
-                            <ConsolePill key={item}>{item}</ConsolePill>
-                          ))}
-                          {memorySummary.preferredStyleTokens.slice(0, 3).map((item) => (
-                            <ConsolePill key={item}>{item}</ConsolePill>
-                          ))}
+                          <div className="w-full max-w-[280px] rounded-[22px] border p-4" style={pillStyle("neutral")}>
+                            <div className="flex items-center justify-between gap-2">
+                              <Typography.Text strong style={{ fontSize: 13 }}>主流程进度</Typography.Text>
+                              <ConsolePill tone="accent">{progress.percent}%</ConsolePill>
+                            </div>
+                            <Progress
+                              percent={progress.percent}
+                              showInfo={false}
+                              strokeColor="#2f6b5f"
+                              railColor="rgba(229,221,210,0.92)"
+                              className="mt-3"
+                            />
+                            <div className="mt-2 text-[12px] text-[var(--af-muted)]">{progress.summary}</div>
+                            <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                              <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
+                                <span className="block text-[11px] text-[var(--af-muted)]">素材</span>
+                                <strong className="mt-1 block text-base text-[var(--af-text)]">{insights.totalAssets}</strong>
+                              </div>
+                              <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
+                                <span className="block text-[11px] text-[var(--af-muted)]">锚点覆盖</span>
+                                <strong className="mt-1 block text-base text-[var(--af-text)]">
+                                  {insights.anchorCoverage}/{REFERENCE_ROLES.length}
+                                </strong>
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                      ) : (
-                        <p className="mt-2 text-[12px] text-[var(--af-muted)]">
-                          当前记忆较干净，这里主要按本次素材实时判断。
-                        </p>
-                      )}
-                    </div>
+                      </section>
 
-                    <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <BgColorsOutlined className="text-[var(--af-brand)]" />
-                        <Typography.Text strong style={{ fontSize: 13 }}>
-                          Pro 负责长期知识
-                        </Typography.Text>
+                      <div className="grid gap-3 xl:grid-cols-[1.15fr_1fr]">
+                        <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                          <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                            <BranchesOutlined />
+                            <span>Stage Rail</span>
+                          </div>
+                          <div className="mt-3 grid gap-2 md:grid-cols-2">
+                            {progress.stages.map((stage) => (
+                              <div
+                                key={stage.id}
+                                className="rounded-[18px] border px-3 py-3"
+                                style={stage.status === "done"
+                                  ? pillStyle("accent")
+                                  : stage.status === "active"
+                                    ? pillStyle("warn")
+                                    : pillStyle("neutral")}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-[13px] font-semibold">{stage.label}</span>
+                                  <span className="text-[11px] text-[var(--af-muted)]">
+                                    {stage.status === "done" ? "已就绪" : stage.status === "active" ? "进行中" : stage.status === "optional" ? "可选" : "待补齐"}
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-[12px] text-[var(--af-muted)]">{stage.detail}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </section>
+
+                        <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                          <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                            <ThunderboltOutlined />
+                            <span>Gap Radar</span>
+                          </div>
+                          {gaps.length === 0 ? (
+                            <Typography.Paragraph style={{ margin: "14px 0 0", color: "var(--af-muted)", fontSize: 13 }}>
+                              现场锚点已经比较完整，可以继续推进生成或直接进入粗剪。
+                            </Typography.Paragraph>
+                          ) : (
+                            <div className="mt-3 space-y-3">
+                              {gaps.slice(0, 4).map((gap, index) => (
+                                <div
+                                  key={gap.id}
+                                  className={`pt-3 ${index === 0 ? "pt-0" : "border-t border-[rgba(229,221,210,0.68)]"}`}
+                                >
+                                  <ConsolePill tone={gap.severity}>{gap.label}</ConsolePill>
+                                  <Typography.Paragraph style={{ margin: "8px 0 0", fontSize: 12, color: "var(--af-muted)" }}>
+                                    {gap.detail}
+                                  </Typography.Paragraph>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </section>
                       </div>
-                      <p className="mt-2 text-[12px] text-[var(--af-muted)]">
-                        模板、记忆和深层 Atelier 编排仍在 Pro 里维护，这里只负责当前局面。
-                      </p>
-                      <Button
-                        size="small"
-                        className="mt-2"
-                        onClick={() => runAction({
-                          key: "open_pro_inline",
-                          title: "打开 Pro",
-                          description: "",
-                          kind: "pro",
-                        })}
-                      >
-                        打开 Pro
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </section>
-            </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--af-muted)]">
-              <ConsolePill>
-                {workspaceView === "clip" ? <ScissorOutlined /> : <RadarChartOutlined />}
-                <span className="ml-1">{workspaceView === "clip" ? "当前在剪辑台" : "当前在对话导演台"}</span>
-              </ConsolePill>
-              <ConsolePill>上下文 {contextMaterialCount}</ConsolePill>
-              <ConsolePill>风格参考 {styleReferenceCount}</ConsolePill>
-            </div>
+                      <div className="grid gap-3 xl:grid-cols-[1.2fr_1fr]">
+                        <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                          <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                            <RightOutlined />
+                            <span>Action Deck</span>
+                          </div>
+                          <div className="mt-3 grid gap-2 md:grid-cols-2">
+                            {actionDeck.map((action) => (
+                              <button
+                                key={action.key}
+                                type="button"
+                                className="director-action-button"
+                                onClick={() => runAction(action)}
+                              >
+                                <span className="text-[14px] font-semibold">{action.title}</span>
+                                <span className="text-[12px] text-[var(--af-muted)]">{action.description}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </section>
+
+                        <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                          <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                            <BookOutlined />
+                            <span>Route Intel</span>
+                          </div>
+
+                          {isLoadingIntel ? (
+                            <div className="flex min-h-[180px] items-center justify-center">
+                              <Spin size="small" />
+                            </div>
+                          ) : (
+                            <div className="mt-3 space-y-3">
+                              <div>
+                                <Typography.Text strong style={{ fontSize: 13 }}>
+                                  路径建议
+                                </Typography.Text>
+                                {pathSummary && pathSummary.recommendations.length > 0 ? (
+                                  <div className="mt-2 space-y-2">
+                                    {pathSummary.recommendations.slice(0, 3).map((item) => (
+                                      <div
+                                        key={item.pathId}
+                                        className="border-l-2 border-[rgba(47,107,95,0.18)] pl-2.5"
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <ConsolePill>{item.title}</ConsolePill>
+                                          <span className="text-[11px] text-[var(--af-muted)]">{item.score.toFixed(1)}</span>
+                                        </div>
+                                        {item.why[0] && (
+                                          <p className="mt-1 text-[12px] text-[var(--af-muted)]">{item.why[0]}</p>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="mt-2 text-[12px] text-[var(--af-muted)]">
+                                    暂无额外路径偏置，当前主要按现场素材与缺口判断。
+                                  </p>
+                                )}
+                              </div>
+
+                              <div>
+                                <Typography.Text strong style={{ fontSize: 13 }}>
+                                  长期偏好提醒
+                                </Typography.Text>
+                                {memorySummary && memorySummary.totalPreferenceItems > 0 ? (
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {memorySummary.preferredWorkflowPaths.slice(0, 2).map((item) => (
+                                      <ConsolePill key={item}>{item}</ConsolePill>
+                                    ))}
+                                    {memorySummary.preferredEditingHints.slice(0, 2).map((item) => (
+                                      <ConsolePill key={item}>{item}</ConsolePill>
+                                    ))}
+                                    {memorySummary.preferredStyleTokens.slice(0, 3).map((item) => (
+                                      <ConsolePill key={item}>{item}</ConsolePill>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="mt-2 text-[12px] text-[var(--af-muted)]">
+                                    当前记忆较干净，这里主要按本次素材实时判断。
+                                  </p>
+                                )}
+                              </div>
+
+                              <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <BgColorsOutlined className="text-[var(--af-brand)]" />
+                                  <Typography.Text strong style={{ fontSize: 13 }}>
+                                    专业策略层已并入灵动岛
+                                  </Typography.Text>
+                                </div>
+                                <p className="mt-2 text-[12px] text-[var(--af-muted)]">
+                                  模板、记忆和深层 Atelier 编排就在旁边的 Pro 标签页里，不再额外开第二个入口。
+                                </p>
+                                <Button size="small" className="mt-2" onClick={() => setActiveTab("pro")}>
+                                  去 Pro
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </section>
+                      </div>
+                    </div>
+                  ),
+                },
+                {
+                  key: "pro",
+                  label: "Pro",
+                  children: (
+                    <ProSettingsPanel
+                      active={isOpen && activeTab === "pro"}
+                      memoryUser={memoryUser}
+                      config={proConfig}
+                      capabilitySkills={capabilitySkills}
+                      capabilityMcps={capabilityMcps}
+                      onApply={onApplyPro}
+                    />
+                  ),
+                },
+              ]}
+            />
           </div>
         </section>
       </div>

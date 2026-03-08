@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import {
@@ -16,9 +16,9 @@ import {
   Typography,
 } from "antd";
 import { fetchJson } from "@/app/components/client-utils";
+import { inferReferenceRole } from "@/lib/video/reference-roles";
 import { useVideoData } from "../hooks/useVideoData";
 import { ResourcePanel } from "../components/ResourcePanel";
-import { ProSettingsDrawer } from "../components/ProSettingsDrawer";
 import { VideoChat } from "../components/VideoChat";
 import { StyleInitPanel } from "../components/StyleInitPanel";
 import { DirectorConsolePanel } from "../components/DirectorConsolePanel";
@@ -89,7 +89,6 @@ export default function VideoWorkflowPage() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("chat");
   const [injectedMessage, setInjectedMessage] = useState<{ id: string; text: string } | null>(null);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
-  const [proOpen, setProOpen] = useState(false);
   const [styleInitOpenSignal, setStyleInitOpenSignal] = useState<number | undefined>(undefined);
   const [memoryUser, setMemoryUser] = useState(() => {
     if (typeof window === "undefined") return "default";
@@ -116,6 +115,7 @@ export default function VideoWorkflowPage() {
   const [styleReferenceMaterials, setStyleReferenceMaterials] = useState<Array<{ id: string; title: string | null }>>([]);
   const [queuedClipResource, setQueuedClipResource] = useState<QueuedClipResource | null>(null);
   const [skipAutoRestoreUser, setSkipAutoRestoreUser] = useState<string | null>(null);
+  const dialogueBootstrapRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -297,6 +297,53 @@ export default function VideoWorkflowPage() {
     setRightDrawerOpen(false);
   }, []);
 
+  const dialogueScriptExists = useMemo(() => {
+    return data.resources?.categories.some((group) =>
+      group.items.some((item) => inferReferenceRole({
+        category: item.category,
+        mediaType: item.mediaType,
+        title: item.title,
+        data: item.data,
+      }) === "dialogue_ref"),
+    ) ?? false;
+  }, [data.resources]);
+
+  const requestDialogueScript = useCallback(async (force: boolean) => {
+    const selectedSequence = data.selectedSequence;
+    if (!selectedSequence) return;
+    try {
+      const result = await fetchJson<{ reused?: boolean }>(
+        `/api/video/sequences/${encodeURIComponent(selectedSequence.id)}/dialogue-script`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId,
+            sequenceKey: selectedSequence.sequenceKey,
+            title: `${formatWorkspaceLabel(selectedSequence.sequenceKey, selectedSequence.sequenceName)} 对白脚本`,
+            force,
+          }),
+        },
+      );
+      await data.refreshResources();
+      if (force) {
+        void message.success(result.reused ? "已恢复现有对白脚本。" : "已生成新的对白脚本确认稿。");
+      }
+    } catch {
+      if (force) {
+        void message.error("自动生成对白脚本失败，请稍后重试。");
+      }
+    }
+  }, [data, message, projectId]);
+
+  useEffect(() => {
+    const selectedSequence = data.selectedSequence;
+    if (!selectedSequence || dialogueScriptExists) return;
+    if (dialogueBootstrapRef.current.has(selectedSequence.id)) return;
+    dialogueBootstrapRef.current.add(selectedSequence.id);
+    void requestDialogueScript(false);
+  }, [data.selectedSequence, dialogueScriptExists, requestDialogueScript]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) return;
@@ -325,7 +372,6 @@ export default function VideoWorkflowPage() {
       onAttachContextResource={handleAttachContextResource}
       onAttachStyleReference={handleAttachStyleReference}
       onQueueClipResource={handleQueueClipResource}
-      onOpenStyleManager={() => void openStyleInit()}
       embedded
     />
   );
@@ -404,12 +450,6 @@ export default function VideoWorkflowPage() {
               <Button size="small" onClick={handleRefreshNeeded}>
                 刷新
               </Button>
-              <Button size="small" onClick={() => void openStyleInit()}>
-                Style
-              </Button>
-              <Button size="small" onClick={() => setProOpen(true)}>
-                Pro
-              </Button>
               {!isDesktop && (
                 <Button size="small" onClick={() => setRightDrawerOpen(true)}>
                   素材
@@ -450,7 +490,11 @@ export default function VideoWorkflowPage() {
               capabilityMcps={DEFAULT_MCPS}
               onInjectMessage={handleInjectMessage}
               onOpenStyle={() => void openStyleInit()}
-              onOpenPro={() => setProOpen(true)}
+              onApplyPro={({ memoryUser: nextMemoryUser, config: nextConfig }) => {
+                setMemoryUser(nextMemoryUser);
+                setProConfig(nextConfig);
+              }}
+              onGenerateDialogueScript={() => { void requestDialogueScript(true); }}
               onSwitchToClip={() => setWorkspaceView("clip")}
             />
 
@@ -483,7 +527,7 @@ export default function VideoWorkflowPage() {
             </div>
           </section>
 
-          {isDesktop && <div className="w-[360px] min-w-[320px]">{resourcePanel}</div>}
+          {isDesktop && <div className="min-h-0 w-[360px] min-w-[320px]">{resourcePanel}</div>}
         </div>
 
         {!isDesktop && (
@@ -499,19 +543,6 @@ export default function VideoWorkflowPage() {
             <div className="h-[calc(100vh-120px)]">{resourcePanel}</div>
           </Drawer>
         )}
-
-        <ProSettingsDrawer
-          open={proOpen}
-          memoryUser={memoryUser}
-          config={proConfig}
-          capabilitySkills={DEFAULT_SKILLS}
-          capabilityMcps={DEFAULT_MCPS}
-          onClose={() => setProOpen(false)}
-          onApply={({ memoryUser: nextMemoryUser, config: nextConfig }) => {
-            setMemoryUser(nextMemoryUser);
-            setProConfig(nextConfig);
-          }}
-        />
       </main>
     </ConfigProvider>
   );
