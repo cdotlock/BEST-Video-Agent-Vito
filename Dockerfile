@@ -22,6 +22,7 @@ ENV NODE_ENV=production
 ENV PORT=8001
 
 RUN corepack enable pnpm
+RUN apk add --no-cache ffmpeg
 
 COPY --from=builder /app/package.json /app/pnpm-lock.yaml ./
 COPY --from=builder /app/.next ./.next

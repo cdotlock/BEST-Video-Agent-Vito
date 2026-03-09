@@ -29,13 +29,12 @@ import {
 import {
   CaretRightOutlined,
   CopyOutlined,
+  DownloadOutlined,
   DeleteOutlined,
-  LeftOutlined,
   MinusOutlined,
   PauseCircleOutlined,
   PlusOutlined,
   RedoOutlined,
-  RightOutlined,
   SaveOutlined,
   ScissorOutlined,
   ThunderboltOutlined,
@@ -82,11 +81,25 @@ const ClipDraftSchema = z.object({
   outSec: z.number().min(0),
   transition: ClipTransitionSchema,
   sourceDurationSec: z.number().min(0).nullable().optional(),
+  audioEnabled: z.boolean().optional(),
+  audioVolume: z.number().min(0).max(200).optional(),
+});
+const AudioTrackDraftSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  url: z.string().url(),
+  startSec: z.number().min(0),
+  sourceInSec: z.number().min(0),
+  sourceOutSec: z.number().min(0),
+  sourceDurationSec: z.number().min(0).nullable().optional(),
+  volume: z.number().min(0).max(200),
+  muted: z.boolean(),
 });
 
 const ClipEditorDocumentSchema = z.object({
   planName: z.string().min(1),
   clips: z.array(ClipDraftSchema),
+  audioTracks: z.array(AudioTrackDraftSchema),
   selectedClipId: z.string().min(1).nullable(),
   selectedSourceResourceId: z.string().min(1).nullable(),
   sourceInSec: z.number().min(0),
@@ -111,8 +124,23 @@ const ClipPlanResourceSchema = z.object({
       outSec: z.number().min(0),
       transition: ClipTransitionSchema.optional(),
       sourceDurationSec: z.number().min(0).nullable().optional(),
+      audioEnabled: z.boolean().optional(),
+      audioVolume: z.number().min(0).max(200).nullable().optional(),
     }),
   ).default([]),
+  audioTracks: z.array(
+    z.object({
+      id: z.string().optional(),
+      title: z.string().nullable().optional(),
+      url: z.string().url().nullable().optional(),
+      startSec: z.number().min(0),
+      sourceInSec: z.number().min(0),
+      sourceOutSec: z.number().min(0),
+      sourceDurationSec: z.number().min(0).nullable().optional(),
+      volume: z.number().min(0).max(200).optional(),
+      muted: z.boolean().optional(),
+    }),
+  ).optional().default([]),
   editorState: z.object({
     selectedClipId: z.string().min(1).nullable().optional(),
     selectedSourceResourceId: z.string().min(1).nullable().optional(),
@@ -129,6 +157,7 @@ const ClipPlanResourceSchema = z.object({
 type ClipTransition = z.infer<typeof ClipTransitionSchema>;
 type ClipEditorDocument = z.infer<typeof ClipEditorDocumentSchema>;
 type ClipDraft = ClipEditorDocument["clips"][number];
+type AudioTrackDraft = ClipEditorDocument["audioTracks"][number];
 
 interface SourceVideoItem {
   id: string;
@@ -150,6 +179,26 @@ interface TimelineClipSegment {
   startSec: number;
   endSec: number;
   durationSec: number;
+  overlapBeforeSec: number;
+}
+
+interface TimelineAudioSegment {
+  track: AudioTrackDraft;
+  index: number;
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+}
+
+interface ActivePreviewTransition {
+  currentClipId: string;
+  nextClipId: string;
+  type: ClipTransition;
+  durationSec: number;
+}
+
+interface PreviewTransitionState extends ActivePreviewTransition {
+  progress: number;
 }
 
 interface SortableClipBlockProps {
@@ -157,7 +206,9 @@ interface SortableClipBlockProps {
   index: number;
   timelineStartSec: number;
   timelineEndSec: number;
+  transitionOverlapSec: number;
   width: number;
+  style?: CSSProperties;
   active: boolean;
   playing: boolean;
   compact: boolean;
@@ -206,19 +257,59 @@ function clipDurationSec(clip: ClipDraft): number {
   return Math.max(0, clip.outSec - clip.inSec);
 }
 
+function audioTrackDurationSec(track: AudioTrackDraft): number {
+  return Math.max(0, track.sourceOutSec - track.sourceInSec);
+}
+
+function boundedTransitionDuration(
+  transition: ClipTransition,
+  previousClipDurationSec: number,
+  nextClipDurationSec: number,
+): number {
+  const preferredDuration = transitionPreviewDurationSec(transition);
+  if (preferredDuration <= 0) return 0;
+  const maxDuration = Math.min(previousClipDurationSec * 0.45, nextClipDurationSec * 0.45);
+  if (maxDuration <= 0.04) return 0;
+  return Number(clamp(preferredDuration, 0.04, maxDuration).toFixed(3));
+}
+
 function buildTimelineSegments(clips: ClipDraft[]): TimelineClipSegment[] {
   let cursor = 0;
   return clips.map((clip, index) => {
     const durationSec = clipDurationSec(clip);
+    const previousClip = index > 0 ? (clips[index - 1] ?? null) : null;
+    const overlapBeforeSec = previousClip
+      ? boundedTransitionDuration(
+        clip.transition,
+        clipDurationSec(previousClip),
+        durationSec,
+      )
+      : 0;
+    const startSec = Math.max(0, cursor - overlapBeforeSec);
+    const endSec = Number((startSec + durationSec).toFixed(3));
     const segment: TimelineClipSegment = {
       clip,
       index,
-      startSec: cursor,
-      endSec: cursor + durationSec,
+      startSec,
+      endSec,
+      durationSec,
+      overlapBeforeSec,
+    };
+    cursor = endSec;
+    return segment;
+  });
+}
+
+function buildAudioTrackSegments(tracks: AudioTrackDraft[]): TimelineAudioSegment[] {
+  return tracks.map((track, index) => {
+    const durationSec = audioTrackDurationSec(track);
+    return {
+      track,
+      index,
+      startSec: track.startSec,
+      endSec: track.startSec + durationSec,
       durationSec,
     };
-    cursor += durationSec;
-    return segment;
   });
 }
 
@@ -227,10 +318,14 @@ function findTimelineSegmentAt(
   playheadSec: number,
 ): TimelineClipSegment | null {
   if (segments.length === 0) return null;
+  let candidate: TimelineClipSegment | null = null;
   for (const segment of segments) {
-    if (playheadSec < segment.endSec) return segment;
+    if (playheadSec < segment.startSec) break;
+    if (playheadSec < segment.endSec) {
+      candidate = segment;
+    }
   }
-  return segments[segments.length - 1] ?? null;
+  return candidate ?? segments[segments.length - 1] ?? null;
 }
 
 function findInsertIndexAtPlayhead(
@@ -293,6 +388,7 @@ function cloneDocument(doc: ClipEditorDocument): ClipEditorDocument {
   return {
     ...doc,
     clips: doc.clips.map((clip) => ({ ...clip })),
+    audioTracks: doc.audioTracks.map((track) => ({ ...track })),
   };
 }
 
@@ -320,6 +416,7 @@ function buildStarterDocument(videoItems: SourceVideoItem[]): ClipEditorDocument
   return {
     planName: DEFAULT_PLAN_NAME,
     clips: initialClips,
+    audioTracks: [],
     selectedClipId: initialClips[0]?.id ?? null,
     selectedSourceResourceId: initialSource?.id ?? initialClips[0]?.resourceId ?? null,
     sourceInSec: initialRange.inSec,
@@ -389,6 +486,8 @@ function createClipFromSource(
     outSec: range?.outSec ?? 4,
     transition: index === 0 ? "none" : "cut",
     sourceDurationSec: range?.sourceDurationSec ?? null,
+    audioEnabled: true,
+    audioVolume: 100,
   };
 }
 
@@ -406,6 +505,113 @@ function autoScrollTimelineViewport(viewport: HTMLDivElement, clientX: number): 
     const speed = clamp(((bounds.left + edgePadding) - clientX) * 0.45, 12, 32);
     viewport.scrollLeft = Math.max(0, viewport.scrollLeft - speed);
   }
+}
+
+function transitionPreviewDurationSec(transition: ClipTransition): number {
+  switch (transition) {
+    case "fade":
+      return 0.42;
+    case "dissolve":
+      return 0.5;
+    case "wipe_left":
+      return 0.48;
+    case "fade_black":
+      return 0.55;
+    case "cut":
+    case "none":
+    default:
+      return 0;
+  }
+}
+
+function deriveTrackTitleFromUrl(url: string, fallbackIndex: number): string {
+  try {
+    const parsed = new URL(url);
+    const last = parsed.pathname.split("/").filter((item) => item.length > 0).pop();
+    if (last) return decodeURIComponent(last);
+  } catch {
+    // ignore invalid urls here; validation happens before save/export
+  }
+  return `音频轨 ${fallbackIndex + 1}`;
+}
+
+function probeMediaDuration(
+  url: string,
+  mediaType: "video" | "audio",
+): Promise<number | null> {
+  return new Promise((resolve) => {
+    const element = mediaType === "video"
+      ? document.createElement("video")
+      : document.createElement("audio");
+
+    const finalize = (value: number | null) => {
+      element.removeEventListener("loadedmetadata", handleLoaded);
+      element.removeEventListener("error", handleError);
+      element.src = "";
+      resolve(value);
+    };
+
+    const handleLoaded = () => {
+      const duration = Number.isFinite(element.duration) ? element.duration : null;
+      finalize(duration !== null && duration > 0 ? Number(duration.toFixed(3)) : null);
+    };
+    const handleError = () => finalize(null);
+
+    element.preload = "metadata";
+    element.addEventListener("loadedmetadata", handleLoaded);
+    element.addEventListener("error", handleError);
+    element.src = url;
+  });
+}
+
+function buildPreviewTransitionStyles(
+  transition: ClipTransition,
+  progressValue: number,
+): {
+  blackout: CSSProperties;
+  incoming: CSSProperties;
+  primary: CSSProperties;
+} {
+  const progress = clamp(progressValue, 0, 1);
+  const outgoingOpacity = Number((1 - progress).toFixed(3));
+  const incomingOpacity = Number(progress.toFixed(3));
+  if (transition === "wipe_left") {
+    return {
+      primary: {
+        opacity: 1,
+      },
+      incoming: {
+        opacity: 1,
+        clipPath: `inset(0 ${Math.round((1 - progress) * 100)}% 0 0)`,
+      },
+      blackout: { opacity: 0 },
+    };
+  }
+  if (transition === "fade_black") {
+    const blackoutOpacity = progress <= 0.5
+      ? progress * 1.56
+      : (1 - progress) * 1.56;
+    return {
+      primary: {
+        opacity: outgoingOpacity,
+      },
+      incoming: {
+        opacity: incomingOpacity,
+      },
+      blackout: {
+        opacity: Number(clamp(blackoutOpacity, 0, 0.78).toFixed(3)),
+      },
+    };
+  }
+  return {
+    primary: {
+      opacity: outgoingOpacity,
+    },
+    incoming: {
+      opacity: incomingOpacity,
+    },
+    blackout: { opacity: 0 },
+  };
 }
 
 function deriveEditingHints(document: ClipEditorDocument): string[] {
@@ -509,11 +715,27 @@ function buildDocumentFromClipPlan(
     outSec: clip.outSec,
     transition: clip.transition ?? "none",
     sourceDurationSec: clip.sourceDurationSec ?? null,
+    audioEnabled: clip.audioEnabled ?? true,
+    audioVolume: clip.audioVolume ?? 100,
   }));
+  const audioTracks: AudioTrackDraft[] = (parsed.data.audioTracks ?? [])
+    .filter((track): track is NonNullable<typeof track> => track.url != null)
+    .map((track, index) => ({
+      id: track.id?.trim() || crypto.randomUUID(),
+      title: track.title?.trim() || deriveTrackTitleFromUrl(track.url!, index),
+      url: track.url!,
+      startSec: track.startSec,
+      sourceInSec: track.sourceInSec,
+      sourceOutSec: track.sourceOutSec,
+      sourceDurationSec: track.sourceDurationSec ?? null,
+      volume: track.volume ?? 100,
+      muted: track.muted ?? false,
+    }));
 
   return {
     planName: parsed.data.key?.trim() || fallbackPlanName,
     clips,
+    audioTracks,
     selectedClipId: editorState?.selectedClipId ?? clips[0]?.id ?? null,
     selectedSourceResourceId: editorState?.selectedSourceResourceId ?? clips[0]?.resourceId ?? null,
     sourceInSec: editorState?.sourceInSec ?? initialRange.inSec,
@@ -601,7 +823,9 @@ function SortableClipBlock({
   index,
   timelineStartSec,
   timelineEndSec,
+  transitionOverlapSec,
   width,
+  style: blockStyle,
   active,
   playing,
   compact,
@@ -626,6 +850,7 @@ function SortableClipBlock({
     touchAction: "none",
     willChange: isDragging ? "transform" : undefined,
     zIndex: isDragging ? 3 : undefined,
+    ...blockStyle,
   };
   return (
     <div
@@ -646,6 +871,14 @@ function SortableClipBlock({
       {...attributes}
       {...listeners}
     >
+      {transitionOverlapSec > 0 ? (
+        <div
+          className="pointer-events-none absolute inset-y-0 left-0 z-[1] rounded-l-[14px] bg-[linear-gradient(90deg,rgba(47,107,95,0.26),rgba(47,107,95,0.08))]"
+          style={{
+            width: `${Math.min(width - 8, Math.max(8, width * (transitionOverlapSec / Math.max(clipDurationSec(clip), 0.001))))}px`,
+          }}
+        />
+      ) : null}
       <button
         type="button"
         aria-label={`${clip.title} 左侧裁切手柄`}
@@ -678,6 +911,34 @@ function SortableClipBlock({
             </div>
             <div className="truncate text-[9px] text-[var(--af-muted)]">
               TL {timelineStartSec.toFixed(2)}s - {timelineEndSec.toFixed(2)}s
+            </div>
+            {transitionOverlapSec > 0 ? (
+              <div className="mt-1 truncate text-[9px] text-[var(--af-muted)]">
+                转场重叠 {transitionOverlapSec.toFixed(2)}s
+              </div>
+            ) : null}
+            <div className="mt-1">
+              {clip.sourceDurationSec ? (
+                <>
+                  <div className="h-1.5 rounded-full bg-[rgba(229,221,210,0.82)]">
+                    <div
+                      className="h-full rounded-full bg-[rgba(47,107,95,0.55)]"
+                      style={{
+                        marginLeft: `${(clip.inSec / clip.sourceDurationSec) * 100}%`,
+                        width: `${Math.max(((clip.outSec - clip.inSec) / clip.sourceDurationSec) * 100, 6)}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="mt-1 text-[9px] text-[var(--af-muted)]">
+                    源长 {clip.sourceDurationSec.toFixed(2)}s
+                    {clip.audioEnabled ? ` · 音量 ${clip.audioVolume}` : " · 静音"}
+                  </div>
+                </>
+              ) : (
+                <div className="text-[9px] text-[var(--af-muted)]">
+                  正在读取源时长…
+                </div>
+              )}
             </div>
           </div>
           <Button
@@ -716,6 +977,8 @@ export function ClipComposer({
 }: ClipComposerProps) {
   const { message } = App.useApp();
   const programVideoRef = useRef<HTMLVideoElement | null>(null);
+  const programTransitionVideoRef = useRef<HTMLVideoElement | null>(null);
+  const audioPreviewRefs = useRef(new Map<string, HTMLAudioElement>());
   const timelineViewportRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const programAdvancingRef = useRef(false);
@@ -723,19 +986,30 @@ export function ClipComposer({
   const lastQueuedTokenRef = useRef<string | null>(null);
   const trimAnimationFrameRef = useRef<number | null>(null);
   const trimPendingClientXRef = useRef<number | null>(null);
+  const audioMoveAnimationFrameRef = useRef<number | null>(null);
+  const audioMovePendingClientXRef = useRef<number | null>(null);
+  const audioTrimAnimationFrameRef = useRef<number | null>(null);
+  const audioTrimPendingClientXRef = useRef<number | null>(null);
   const scrubAnimationFrameRef = useRef<number | null>(null);
   const scrubPendingClientXRef = useRef<number | null>(null);
+  const pendingVideoProbeUrlsRef = useRef(new Set<string>());
+  const pendingAudioProbeUrlsRef = useRef(new Set<string>());
+  const mediaDurationCacheRef = useRef(new Map<string, number>());
+  const programCarryoverOffsetRef = useRef(0);
 
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [autosaveState, setAutosaveState] = useState<"idle" | "pending" | "saving" | "saved" | "error">("idle");
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [isProgramPlaying, setIsProgramPlaying] = useState(false);
   const [programPlaybackIndex, setProgramPlaybackIndex] = useState<number | null>(null);
   const [timelinePlayheadSec, setTimelinePlayheadSec] = useState(0);
   const [isTimelineDragOver, setIsTimelineDragOver] = useState(false);
-  const [inspectorExpanded, setInspectorExpanded] = useState(false);
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
   const [fitTimelineToView, setFitTimelineToView] = useState(false);
+  const [pendingAudioUrl, setPendingAudioUrl] = useState("");
+  const [pendingAudioTitle, setPendingAudioTitle] = useState("");
+  const [activePreviewTransition, setActivePreviewTransition] = useState<ActivePreviewTransition | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -794,6 +1068,24 @@ export function ClipComposer({
         outSec,
         transition: clip.transition,
         sourceDurationSec: sourceDuration,
+        audioEnabled: clip.audioEnabled ?? true,
+        audioVolume: clamp(clip.audioVolume ?? 100, 0, 200),
+      };
+    });
+    const normalizedAudioTracks = doc.audioTracks.map((track, index) => {
+      const sourceDuration = track.sourceDurationSec ?? null;
+      const sourceInSec = clamp(track.sourceInSec, 0, sourceDuration ?? Number.MAX_SAFE_INTEGER);
+      const sourceOutSec = clamp(track.sourceOutSec, sourceInSec, sourceDuration ?? Number.MAX_SAFE_INTEGER);
+      return {
+        id: track.id,
+        title: track.title.trim() || deriveTrackTitleFromUrl(track.url, index),
+        url: track.url,
+        startSec: clamp(track.startSec, 0, Number.MAX_SAFE_INTEGER),
+        sourceInSec,
+        sourceOutSec,
+        sourceDurationSec: sourceDuration,
+        volume: clamp(track.volume, 0, 200),
+        muted: track.muted,
       };
     });
 
@@ -815,6 +1107,7 @@ export function ClipComposer({
     return {
       planName: doc.planName.trim() || DEFAULT_PLAN_NAME,
       clips: normalizedClips,
+      audioTracks: normalizedAudioTracks,
       selectedClipId,
       selectedSourceResourceId,
       sourceInSec,
@@ -904,6 +1197,12 @@ export function ClipComposer({
       if (trimAnimationFrameRef.current !== null) {
         cancelAnimationFrame(trimAnimationFrameRef.current);
       }
+      if (audioMoveAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(audioMoveAnimationFrameRef.current);
+      }
+      if (audioTrimAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(audioTrimAnimationFrameRef.current);
+      }
       if (scrubAnimationFrameRef.current !== null) {
         cancelAnimationFrame(scrubAnimationFrameRef.current);
       }
@@ -976,6 +1275,70 @@ export function ClipComposer({
     if (!localDraftKey || !editor.bootstrapped || typeof window === "undefined") return;
     window.localStorage.setItem(localDraftKey, serializedDocument);
   }, [editor.bootstrapped, localDraftKey, serializedDocument]);
+
+  useEffect(() => {
+    if (!editor.bootstrapped || typeof window === "undefined") return;
+    const targets = currentDocument.clips
+      .filter((clip) => clip.url && clip.sourceDurationSec == null)
+      .map((clip) => clip.url)
+      .filter((url): url is string => typeof url === "string");
+
+    for (const url of targets) {
+      if (mediaDurationCacheRef.current.has(url) || pendingVideoProbeUrlsRef.current.has(url)) continue;
+      pendingVideoProbeUrlsRef.current.add(url);
+      void probeMediaDuration(url, "video")
+        .then((durationSec) => {
+          if (durationSec === null) return;
+          mediaDurationCacheRef.current.set(url, durationSec);
+          commitDocument((current) => ({
+            ...current,
+            clips: current.clips.map((clip) => {
+              if (clip.url !== url) return clip;
+              return {
+                ...clip,
+                sourceDurationSec: durationSec,
+                outSec: clamp(clip.outSec, clip.inSec, durationSec),
+              };
+            }),
+          }), { recordHistory: false });
+        })
+        .finally(() => {
+          pendingVideoProbeUrlsRef.current.delete(url);
+        });
+    }
+  }, [commitDocument, currentDocument.clips, editor.bootstrapped]);
+
+  useEffect(() => {
+    if (!editor.bootstrapped || typeof window === "undefined") return;
+    const targets = currentDocument.audioTracks
+      .filter((track) => track.sourceDurationSec == null)
+      .map((track) => track.url);
+
+    for (const url of targets) {
+      if (mediaDurationCacheRef.current.has(url) || pendingAudioProbeUrlsRef.current.has(url)) continue;
+      pendingAudioProbeUrlsRef.current.add(url);
+      void probeMediaDuration(url, "audio")
+        .then((durationSec) => {
+          if (durationSec === null) return;
+          mediaDurationCacheRef.current.set(url, durationSec);
+          commitDocument((current) => ({
+            ...current,
+            audioTracks: current.audioTracks.map((track, index) => {
+              if (track.url !== url) return track;
+              return {
+                ...track,
+                title: track.title || deriveTrackTitleFromUrl(url, index),
+                sourceDurationSec: durationSec,
+                sourceOutSec: clamp(track.sourceOutSec, track.sourceInSec, durationSec),
+              };
+            }),
+          }), { recordHistory: false });
+        })
+        .finally(() => {
+          pendingAudioProbeUrlsRef.current.delete(url);
+        });
+    }
+  }, [commitDocument, currentDocument.audioTracks, editor.bootstrapped]);
 
   useEffect(() => {
     if (!editor.bootstrapped || !queuedClipResource) return;
@@ -1051,8 +1414,17 @@ export function ClipComposer({
     () => buildTimelineSegments(currentDocument.clips),
     [currentDocument.clips],
   );
+  const audioTimelineSegments = useMemo(
+    () => buildAudioTrackSegments(currentDocument.audioTracks),
+    [currentDocument.audioTracks],
+  );
 
   const totalDuration = useMemo(() => {
+    const videoTail = timelineSegments.reduce((max, segment) => Math.max(max, segment.endSec), 0);
+    const audioTail = audioTimelineSegments.reduce((max, segment) => Math.max(max, segment.endSec), 0);
+    return Math.max(videoTail, audioTail);
+  }, [audioTimelineSegments, timelineSegments]);
+  const videoProgramDuration = useMemo(() => {
     const tail = timelineSegments[timelineSegments.length - 1];
     return tail?.endSec ?? 0;
   }, [timelineSegments]);
@@ -1074,6 +1446,94 @@ export function ClipComposer({
     programPlaybackIndex,
     selectedClip,
   ]);
+
+  const previewTransitionState = useMemo<PreviewTransitionState | null>(() => {
+    if (isProgramPlaying && programPlaybackIndex !== null) {
+      const currentSegment = timelineSegments[programPlaybackIndex] ?? null;
+      const currentClip = currentDocument.clips[programPlaybackIndex] ?? null;
+      const nextClip = currentDocument.clips[programPlaybackIndex + 1] ?? null;
+      if (!currentSegment || !currentClip || !nextClip || !nextClip.url) return null;
+      const durationSec = boundedTransitionDuration(
+        nextClip.transition,
+        currentSegment.durationSec,
+        clipDurationSec(nextClip),
+      );
+      if (durationSec <= 0.04) return null;
+      const startSec = currentSegment.endSec - durationSec;
+      if (timelinePlayheadSec < startSec || timelinePlayheadSec > currentSegment.endSec) return null;
+      return {
+        currentClipId: currentClip.id,
+        nextClipId: nextClip.id,
+        type: nextClip.transition,
+        durationSec,
+        progress: Number(clamp((timelinePlayheadSec - startSec) / durationSec, 0, 1).toFixed(3)),
+      };
+    }
+
+    const segment = playheadSegment;
+    if (!segment || segment.index === 0 || segment.overlapBeforeSec <= 0) return null;
+    if (timelinePlayheadSec > segment.startSec + segment.overlapBeforeSec) return null;
+    const previousSegment = timelineSegments[segment.index - 1] ?? null;
+    if (!previousSegment || !segment.clip.url || !previousSegment.clip.url) return null;
+    return {
+      currentClipId: previousSegment.clip.id,
+      nextClipId: segment.clip.id,
+      type: segment.clip.transition,
+      durationSec: segment.overlapBeforeSec,
+      progress: Number(
+        clamp(
+          (timelinePlayheadSec - segment.startSec) / Math.max(segment.overlapBeforeSec, 0.001),
+          0,
+          1,
+        ).toFixed(3),
+      ),
+    };
+  }, [
+    currentDocument.clips,
+    isProgramPlaying,
+    playheadSegment,
+    programPlaybackIndex,
+    timelinePlayheadSec,
+    timelineSegments,
+  ]);
+
+  const resetPreviewTransition = useCallback(() => {
+    setActivePreviewTransition(null);
+    const transitionVideo = programTransitionVideoRef.current;
+    if (transitionVideo) {
+      transitionVideo.pause();
+      transitionVideo.removeAttribute("src");
+      transitionVideo.load();
+    }
+  }, []);
+
+  const beginPreviewTransition = useCallback((currentIndex: number) => {
+    const currentClip = currentDocument.clips[currentIndex];
+    const nextClip = currentDocument.clips[currentIndex + 1];
+    if (!currentClip || !nextClip?.url) return;
+    if (nextClip.transition === "none" || nextClip.transition === "cut") return;
+
+    const durationSec = boundedTransitionDuration(
+      nextClip.transition,
+      clipDurationSec(currentClip),
+      clipDurationSec(nextClip),
+    );
+    if (durationSec <= 0.04) return;
+    if (
+      activePreviewTransition
+      && activePreviewTransition.currentClipId === currentClip.id
+      && activePreviewTransition.nextClipId === nextClip.id
+    ) {
+      return;
+    }
+
+    setActivePreviewTransition({
+      currentClipId: currentClip.id,
+      nextClipId: nextClip.id,
+      type: nextClip.transition,
+      durationSec,
+    });
+  }, [activePreviewTransition, currentDocument.clips]);
 
   useEffect(() => {
     setTimelinePlayheadSec((current) => clamp(current, 0, totalDuration));
@@ -1099,11 +1559,13 @@ export function ClipComposer({
     setIsProgramPlaying(false);
     setProgramPlaybackIndex(null);
     programAdvancingRef.current = false;
+    programCarryoverOffsetRef.current = 0;
+    resetPreviewTransition();
     const video = programVideoRef.current;
     if (video) {
       video.pause();
     }
-  }, []);
+  }, [resetPreviewTransition]);
 
   const findNextPlayableIndex = useCallback((from: number): number | null => {
     for (let index = from; index < currentDocument.clips.length; index += 1) {
@@ -1118,17 +1580,29 @@ export function ClipComposer({
       stopProgramPlayback();
       return;
     }
+    const currentClip = currentDocument.clips[programPlaybackIndex] ?? null;
     const nextIndex = findNextPlayableIndex(programPlaybackIndex + 1);
     if (nextIndex === null) {
-      setTimelinePlayheadSec(totalDuration);
+      programCarryoverOffsetRef.current = 0;
+      setTimelinePlayheadSec(videoProgramDuration);
       stopProgramPlayback();
       return;
     }
     const nextSegment = timelineSegments[nextIndex];
+    const nextClip = currentDocument.clips[nextIndex] ?? null;
+    const shouldCarryTransition = nextIndex === programPlaybackIndex + 1 && currentClip && nextClip;
+    const carryoverSec = shouldCarryTransition
+      ? boundedTransitionDuration(
+        nextClip.transition,
+        clipDurationSec(currentClip),
+        clipDurationSec(nextClip),
+      )
+      : 0;
+    programCarryoverOffsetRef.current = carryoverSec;
     programAdvancingRef.current = true;
     setProgramPlaybackIndex(nextIndex);
     if (nextSegment) {
-      setTimelinePlayheadSec(nextSegment.startSec);
+      setTimelinePlayheadSec(Number((nextSegment.startSec + carryoverSec).toFixed(3)));
     }
     commitDocument((current) => ({
       ...current,
@@ -1137,11 +1611,12 @@ export function ClipComposer({
     }), { recordHistory: false });
   }, [
     commitDocument,
+    currentDocument.clips,
     findNextPlayableIndex,
     programPlaybackIndex,
     stopProgramPlayback,
     timelineSegments,
-    totalDuration,
+    videoProgramDuration,
   ]);
 
   useEffect(() => {
@@ -1155,9 +1630,11 @@ export function ClipComposer({
     const video = programVideoRef.current;
     if (!video) return;
     programAdvancingRef.current = false;
+    const carryoverSec = programCarryoverOffsetRef.current;
+    programCarryoverOffsetRef.current = 0;
 
     const begin = () => {
-      video.currentTime = clip.inSec;
+      video.currentTime = clamp(clip.inSec + carryoverSec, clip.inSec, clip.outSec);
       void video.play().catch(() => {
         // ignore autoplay rejections
       });
@@ -1172,6 +1649,19 @@ export function ClipComposer({
       video.removeEventListener("loadedmetadata", begin);
     };
   }, [advanceToNextClip, currentDocument.clips, isProgramPlaying, programPlaybackIndex]);
+
+  useEffect(() => {
+    const currentClip = programPlaybackIndex !== null ? currentDocument.clips[programPlaybackIndex] ?? null : null;
+    if (!isProgramPlaying || !currentClip || !activePreviewTransition) {
+      if (!isProgramPlaying && activePreviewTransition) {
+        resetPreviewTransition();
+      }
+      return;
+    }
+    if (activePreviewTransition.currentClipId !== currentClip.id) {
+      resetPreviewTransition();
+    }
+  }, [activePreviewTransition, currentDocument.clips, isProgramPlaying, programPlaybackIndex, resetPreviewTransition]);
 
   const persistPlan = useCallback(async (saveMode: "manual" | "autosave") => {
     if (!sequenceId) {
@@ -1217,6 +1707,19 @@ export function ClipComposer({
             transition: clip.transition,
             title: clip.title,
             sourceDurationSec: clip.sourceDurationSec,
+            audioEnabled: clip.audioEnabled,
+            audioVolume: clip.audioVolume,
+          })),
+          audioTracks: currentDocument.audioTracks.map((track) => ({
+            id: track.id,
+            title: track.title,
+            url: track.url,
+            startSec: track.startSec,
+            sourceInSec: track.sourceInSec,
+            sourceOutSec: track.sourceOutSec,
+            sourceDurationSec: track.sourceDurationSec,
+            volume: track.volume,
+            muted: track.muted,
           })),
           editorState: {
             selectedClipId: currentDocument.selectedClipId,
@@ -1338,6 +1841,21 @@ export function ClipComposer({
       if (!clip || !segment) return;
       const offset = clamp(video.currentTime - clip.inSec, 0, clipDurationSec(clip));
       setTimelinePlayheadSec(clamp(segment.startSec + offset, segment.startSec, segment.endSec));
+      const nextClip = currentDocument.clips[programPlaybackIndex + 1] ?? null;
+      if (nextClip) {
+        const transitionDuration = Math.min(
+          transitionPreviewDurationSec(nextClip.transition),
+          clipDurationSec(clip) * 0.45,
+          clipDurationSec(nextClip) * 0.45,
+        );
+        if (transitionDuration > 0.04 && video.currentTime >= clip.outSec - transitionDuration) {
+          beginPreviewTransition(programPlaybackIndex);
+        } else if (activePreviewTransition?.currentClipId === clip.id) {
+          resetPreviewTransition();
+        }
+      } else if (activePreviewTransition) {
+        resetPreviewTransition();
+      }
       if (video.currentTime >= clip.outSec - 0.03) {
         advanceToNextClip();
       }
@@ -1357,10 +1875,13 @@ export function ClipComposer({
     }
   }, [
     advanceToNextClip,
+    activePreviewTransition,
+    beginPreviewTransition,
     currentDocument.clips,
     isProgramPlaying,
     playheadSegment,
     programPlaybackIndex,
+    resetPreviewTransition,
     timelineSegments,
   ]);
 
@@ -1391,6 +1912,87 @@ export function ClipComposer({
       video.removeEventListener("loadedmetadata", syncFrame);
     };
   }, [isProgramPlaying, playheadSegment, timelinePlayheadSec]);
+
+  useEffect(() => {
+    const video = programVideoRef.current;
+    if (!video) return;
+    const enabled = previewClip?.audioEnabled ?? true;
+    video.muted = !enabled;
+    video.volume = clamp((previewClip?.audioVolume ?? 100) / 100, 0, 1);
+  }, [previewClip]);
+
+  useEffect(() => {
+    const transitionVideo = programTransitionVideoRef.current;
+    if (!transitionVideo) return;
+    transitionVideo.muted = true;
+    transitionVideo.volume = 0;
+  }, [previewTransitionState]);
+
+  useEffect(() => {
+    const transitionVideo = programTransitionVideoRef.current;
+    if (!transitionVideo || !previewTransitionState) return;
+    const nextClip = currentDocument.clips.find((clip) => clip.id === previewTransitionState.nextClipId) ?? null;
+    if (!nextClip?.url) return;
+
+    const syncFrame = () => {
+      const targetTime = clamp(
+        nextClip.inSec + previewTransitionState.progress * previewTransitionState.durationSec,
+        nextClip.inSec,
+        nextClip.outSec,
+      );
+      if (Math.abs(transitionVideo.currentTime - targetTime) > 0.04) {
+        transitionVideo.currentTime = targetTime;
+      }
+      transitionVideo.pause();
+    };
+
+    if (transitionVideo.src !== nextClip.url) {
+      transitionVideo.src = nextClip.url;
+    }
+    if (transitionVideo.readyState >= 1) {
+      syncFrame();
+      return;
+    }
+    transitionVideo.addEventListener("loadedmetadata", syncFrame, { once: true });
+    return () => {
+      transitionVideo.removeEventListener("loadedmetadata", syncFrame);
+    };
+  }, [currentDocument.clips, previewTransitionState]);
+
+  useEffect(() => {
+    const entries = [...audioPreviewRefs.current.entries()];
+    for (const [trackId, element] of entries) {
+      const track = currentDocument.audioTracks.find((item) => item.id === trackId) ?? null;
+      if (!track) {
+        element.pause();
+        continue;
+      }
+
+      const durationSec = audioTrackDurationSec(track);
+      const localOffset = timelinePlayheadSec - track.startSec;
+      const shouldPlay = !track.muted && durationSec > 0 && localOffset >= 0 && localOffset < durationSec;
+      element.volume = clamp(track.volume / 100, 0, 1);
+      element.muted = track.muted;
+
+      if (!shouldPlay) {
+        element.pause();
+        continue;
+      }
+
+      const targetTime = clamp(track.sourceInSec + localOffset, track.sourceInSec, track.sourceOutSec);
+      if (Math.abs(element.currentTime - targetTime) > 0.2) {
+        element.currentTime = targetTime;
+      }
+
+      if (isProgramPlaying) {
+        void element.play().catch(() => {
+          // ignore autoplay rejections for background audio preview
+        });
+      } else {
+        element.pause();
+      }
+    }
+  }, [currentDocument.audioTracks, isProgramPlaying, timelinePlayheadSec]);
 
   const selectClip = useCallback((clipId: string) => {
     const segment = timelineSegments.find((item) => item.clip.id === clipId) ?? null;
@@ -1629,6 +2231,347 @@ export function ClipComposer({
     }));
   }, [commitDocument, selectedClip]);
 
+  const updateAudioTrack = useCallback((trackId: string, patch: Partial<AudioTrackDraft>) => {
+    commitDocument((current) => ({
+      ...current,
+      audioTracks: current.audioTracks.map((track, index) => {
+        if (track.id !== trackId) return track;
+        const nextTrack = {
+          ...track,
+          ...patch,
+        };
+        const sourceDurationSec = nextTrack.sourceDurationSec ?? null;
+        const sourceInSec = clamp(nextTrack.sourceInSec, 0, sourceDurationSec ?? Number.MAX_SAFE_INTEGER);
+        const sourceOutSec = clamp(
+          nextTrack.sourceOutSec,
+          sourceInSec,
+          sourceDurationSec ?? Number.MAX_SAFE_INTEGER,
+        );
+        return {
+          ...nextTrack,
+          title: nextTrack.title.trim() || deriveTrackTitleFromUrl(nextTrack.url, index),
+          startSec: clamp(nextTrack.startSec, 0, Number.MAX_SAFE_INTEGER),
+          sourceInSec,
+          sourceOutSec,
+          volume: clamp(nextTrack.volume, 0, 200),
+        };
+      }),
+    }));
+  }, [commitDocument]);
+
+  const removeAudioTrack = useCallback((trackId: string) => {
+    commitDocument((current) => ({
+      ...current,
+      audioTracks: current.audioTracks.filter((track) => track.id !== trackId),
+    }));
+  }, [commitDocument]);
+
+  const handleAddAudioTrack = useCallback(() => {
+    const url = pendingAudioUrl.trim();
+    if (url.length === 0) {
+      void message.warning("请先输入音频 URL。");
+      return;
+    }
+
+    try {
+      new URL(url);
+    } catch {
+      void message.warning("请输入有效的音频 URL。");
+      return;
+    }
+
+    const defaultTitle = pendingAudioTitle.trim() || deriveTrackTitleFromUrl(url, currentDocument.audioTracks.length);
+    const nextTrack: AudioTrackDraft = {
+      id: crypto.randomUUID(),
+      title: defaultTitle,
+      url,
+      startSec: clamp(timelinePlayheadSec, 0, totalDuration),
+      sourceInSec: 0,
+      sourceOutSec: 12,
+      sourceDurationSec: null,
+      volume: 100,
+      muted: false,
+    };
+    commitDocument((current) => ({
+      ...current,
+      audioTracks: [...current.audioTracks, nextTrack],
+    }));
+    setPendingAudioUrl("");
+    setPendingAudioTitle("");
+    void message.success(`已加入音频轨：${defaultTitle}`, 0.8);
+  }, [commitDocument, currentDocument.audioTracks.length, message, pendingAudioTitle, pendingAudioUrl, timelinePlayheadSec, totalDuration]);
+
+  const handleAudioTrackMoveMouseDown = useCallback((
+    trackId: string,
+    event: ReactMouseEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isProgramPlaying) {
+      stopProgramPlayback();
+    }
+
+    const baseTrack = currentDocument.audioTracks.find((track) => track.id === trackId) ?? null;
+    if (!baseTrack) return;
+
+    const initialClientX = event.clientX;
+    const initialStartSec = baseTrack.startSec;
+    const pixelsPerSecond = fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0
+      ? Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1))
+      : Math.max(12, currentDocument.timelineZoom * 1.05);
+
+    const applyAtClientX = (clientX: number) => {
+      const deltaSec = (clientX - initialClientX) / pixelsPerSecond;
+      const nextStartSec = clamp(
+        quantize(initialStartSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+      updateAudioTrack(trackId, { startSec: nextStartSec });
+    };
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const viewport = timelineViewportRef.current;
+      if (viewport) {
+        autoScrollTimelineViewport(viewport, moveEvent.clientX);
+      }
+      audioMovePendingClientXRef.current = moveEvent.clientX;
+      if (audioMoveAnimationFrameRef.current !== null) return;
+      audioMoveAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        audioMoveAnimationFrameRef.current = null;
+        const nextClientX = audioMovePendingClientXRef.current;
+        audioMovePendingClientXRef.current = null;
+        if (nextClientX === null) return;
+        applyAtClientX(nextClientX);
+      });
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (audioMoveAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(audioMoveAnimationFrameRef.current);
+        audioMoveAnimationFrameRef.current = null;
+      }
+      if (audioMovePendingClientXRef.current !== null) {
+        applyAtClientX(audioMovePendingClientXRef.current);
+        audioMovePendingClientXRef.current = null;
+      }
+      setEditor((prev) => {
+        const currentSerialized = serializeDocument(prev.present);
+        const historySerialized = serializeDocument(prev.history[prev.historyIndex] ?? prev.present);
+        if (currentSerialized === historySerialized) {
+          return prev;
+        }
+        const historyHead = prev.history.slice(0, prev.historyIndex + 1);
+        const nextHistory = [...historyHead, cloneDocument(prev.present)].slice(-MAX_HISTORY);
+        return {
+          ...prev,
+          history: nextHistory,
+          historyIndex: nextHistory.length - 1,
+        };
+      });
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [
+    currentDocument.audioTracks,
+    currentDocument.snapEnabled,
+    currentDocument.snapStepSec,
+    currentDocument.timelineZoom,
+    fitTimelineToView,
+    isProgramPlaying,
+    stopProgramPlayback,
+    timelineViewportWidth,
+    totalDuration,
+    updateAudioTrack,
+  ]);
+
+  const handleAudioTrimMouseDown = useCallback((
+    trackId: string,
+    edge: "start" | "end",
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isProgramPlaying) {
+      stopProgramPlayback();
+    }
+
+    const baseTrack = currentDocument.audioTracks.find((track) => track.id === trackId) ?? null;
+    if (!baseTrack) return;
+
+    const initialClientX = event.clientX;
+    const initialStartSec = baseTrack.startSec;
+    const initialSourceInSec = baseTrack.sourceInSec;
+    const initialSourceOutSec = baseTrack.sourceOutSec;
+    const sourceDurationSec = baseTrack.sourceDurationSec ?? Number.MAX_SAFE_INTEGER;
+    const minDuration = Math.max(
+      0.15,
+      currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.15,
+    );
+    const pixelsPerSecond = fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0
+      ? Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1))
+      : Math.max(12, currentDocument.timelineZoom * 1.05);
+
+    const applyAtClientX = (clientX: number) => {
+      const deltaSec = (clientX - initialClientX) / pixelsPerSecond;
+      if (edge === "start") {
+        const nextSourceInSec = clamp(
+          quantize(initialSourceInSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+          0,
+          initialSourceOutSec - minDuration,
+        );
+        const actualDelta = nextSourceInSec - initialSourceInSec;
+        updateAudioTrack(trackId, {
+          startSec: clamp(initialStartSec + actualDelta, 0, Number.MAX_SAFE_INTEGER),
+          sourceInSec: nextSourceInSec,
+        });
+        return;
+      }
+      const nextSourceOutSec = clamp(
+        quantize(initialSourceOutSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+        initialSourceInSec + minDuration,
+        sourceDurationSec,
+      );
+      updateAudioTrack(trackId, { sourceOutSec: nextSourceOutSec });
+    };
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const viewport = timelineViewportRef.current;
+      if (viewport) {
+        autoScrollTimelineViewport(viewport, moveEvent.clientX);
+      }
+      audioTrimPendingClientXRef.current = moveEvent.clientX;
+      if (audioTrimAnimationFrameRef.current !== null) return;
+      audioTrimAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        audioTrimAnimationFrameRef.current = null;
+        const nextClientX = audioTrimPendingClientXRef.current;
+        audioTrimPendingClientXRef.current = null;
+        if (nextClientX === null) return;
+        applyAtClientX(nextClientX);
+      });
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (audioTrimAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(audioTrimAnimationFrameRef.current);
+        audioTrimAnimationFrameRef.current = null;
+      }
+      if (audioTrimPendingClientXRef.current !== null) {
+        applyAtClientX(audioTrimPendingClientXRef.current);
+        audioTrimPendingClientXRef.current = null;
+      }
+      setEditor((prev) => {
+        const currentSerialized = serializeDocument(prev.present);
+        const historySerialized = serializeDocument(prev.history[prev.historyIndex] ?? prev.present);
+        if (currentSerialized === historySerialized) {
+          return prev;
+        }
+        const historyHead = prev.history.slice(0, prev.historyIndex + 1);
+        const nextHistory = [...historyHead, cloneDocument(prev.present)].slice(-MAX_HISTORY);
+        return {
+          ...prev,
+          history: nextHistory,
+          historyIndex: nextHistory.length - 1,
+        };
+      });
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [
+    currentDocument.audioTracks,
+    currentDocument.snapEnabled,
+    currentDocument.snapStepSec,
+    currentDocument.timelineZoom,
+    fitTimelineToView,
+    isProgramPlaying,
+    stopProgramPlayback,
+    timelineViewportWidth,
+    totalDuration,
+    updateAudioTrack,
+  ]);
+
+  const setAudioPreviewRef = useCallback((trackId: string, element: HTMLAudioElement | null) => {
+    if (element) {
+      audioPreviewRefs.current.set(trackId, element);
+      return;
+    }
+    audioPreviewRefs.current.delete(trackId);
+  }, []);
+
+  const handleExportVideo = useCallback(async () => {
+    if (!sequenceId) {
+      void message.warning("请先创建或选择序列。");
+      return;
+    }
+    const persisted = await persistPlan("manual");
+    if (!persisted) return;
+
+    setExporting(true);
+    try {
+      const response = await fetch(`/api/video/sequences/${encodeURIComponent(sequenceId)}/clip-plan/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planName: currentDocument.planName.trim() || DEFAULT_PLAN_NAME,
+          clips: currentDocument.clips.map((clip) => ({
+            id: clip.id,
+            resourceId: clip.resourceId,
+            url: clip.url,
+            inSec: clip.inSec,
+            outSec: clip.outSec,
+            transition: clip.transition,
+            title: clip.title,
+            sourceDurationSec: clip.sourceDurationSec,
+            audioEnabled: clip.audioEnabled,
+            audioVolume: clip.audioVolume,
+          })),
+          audioTracks: currentDocument.audioTracks.map((track) => ({
+            id: track.id,
+            title: track.title,
+            url: track.url,
+            startSec: track.startSec,
+            sourceInSec: track.sourceInSec,
+            sourceOutSec: track.sourceOutSec,
+            sourceDurationSec: track.sourceDurationSec,
+            volume: track.volume,
+            muted: track.muted,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: "导出失败" }));
+        const errorText = typeof payload.error === "string" ? payload.error : "导出失败";
+        throw new Error(errorText);
+      }
+
+      const blob = await response.blob();
+      const header = response.headers.get("Content-Disposition");
+      const match = header?.match(/filename=\"?([^"]+)\"?/);
+      const fileName = match?.[1] ? decodeURIComponent(match[1]) : `${DEFAULT_PLAN_NAME}.mp4`;
+      const objectUrl = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(objectUrl);
+      void message.success("导出完成，已开始下载。");
+    } catch (error) {
+      const text = error instanceof Error ? error.message : "导出失败";
+      void message.error(text);
+    } finally {
+      setExporting(false);
+    }
+  }, [currentDocument.audioTracks, currentDocument.clips, currentDocument.planName, message, persistPlan, sequenceId]);
+
   const handleTrimMouseDown = useCallback((
     clipId: string,
     edge: "start" | "end",
@@ -1780,6 +2723,7 @@ export function ClipComposer({
       return;
     }
     const startSegment = timelineSegments[firstPlayable];
+    programCarryoverOffsetRef.current = 0;
     setIsProgramPlaying(true);
     setProgramPlaybackIndex(firstPlayable);
     if (startSegment) {
@@ -2021,6 +2965,11 @@ export function ClipComposer({
     );
   }
 
+  const previewTransitionStyle = buildPreviewTransitionStyles(
+    previewTransitionState?.type ?? "none",
+    previewTransitionState?.progress ?? 0,
+  );
+
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -2029,7 +2978,7 @@ export function ClipComposer({
             Clip Studio
           </Typography.Text>
           <div className="mt-1 text-[11px] text-[var(--af-muted)]">
-            左侧小 Inspector · 右侧 Preview（上）+ Timeline（下），布局固定
+            左侧 Inspector 常驻展开 · 右侧真实转场 Preview（上）+ Timeline（下）
           </div>
         </div>
         <Space size={8}>
@@ -2052,172 +3001,285 @@ export function ClipComposer({
         className="mb-4"
         showIcon
         type="info"
-        title="从右侧素材栏拖入视频到时间线；拖动时间尺可 scrub 并联动 Preview 与当前片段。可一键 AI 自动粗剪并应用转场预设。"
+        title="从右侧素材栏拖入视频到时间线；拖动时间尺可 scrub 并联动 Preview。转场在预览中真实生效，音频轨会跟随时间线同步。"
       />
 
       <div className="overflow-x-auto pb-1">
         <div
           className="grid min-w-[860px] gap-3"
-          style={{ gridTemplateColumns: `${inspectorExpanded ? 220 : 88}px minmax(0, 1fr)` }}
+          style={{ gridTemplateColumns: "272px minmax(0, 1fr)" }}
         >
-        <Card
-          className="ceramic-panel !border-transparent"
-          styles={{ body: { padding: inspectorExpanded ? 16 : 12 } }}
-        >
-          <div className={`flex h-full flex-col ${inspectorExpanded ? "gap-4" : "gap-3"}`}>
-            <div className={`flex items-center ${inspectorExpanded ? "justify-between" : "justify-between"}`}>
-              {inspectorExpanded ? (
-                <div className="min-w-0">
-                  <Typography.Text strong style={{ fontSize: 13 }}>
-                    Inspector
-                  </Typography.Text>
-                  <div className="mt-0.5 text-[11px] text-[var(--af-muted)]">
-                    {selectedClip ? `片段 #${selectedClipIndex + 1}` : "选择片段后精修"}
-                  </div>
+          <Card
+            className="ceramic-panel !border-transparent"
+            styles={{ body: { padding: 16 } }}
+          >
+            <div className="flex h-full flex-col gap-4">
+              <div className="min-w-0">
+                <Typography.Text strong style={{ fontSize: 13 }}>
+                  Inspector
+                </Typography.Text>
+                <div className="mt-0.5 text-[11px] text-[var(--af-muted)]">
+                  默认展开；同时维护片段参数和简单音频轨。
                 </div>
+              </div>
+
+              {!selectedClip ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择时间线中的片段后可在这里精修。" />
               ) : (
-                <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                  Edit
-                </div>
+                <>
+                  <div className="rounded-[18px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.76)] p-3">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <Typography.Text strong>片段 #{selectedClipIndex + 1}</Typography.Text>
+                      <Tag style={{ margin: 0 }}>{(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s</Tag>
+                    </div>
+
+                    <div>
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                        片段标题
+                      </Typography.Text>
+                      <Input
+                        className="mt-1"
+                        value={selectedClip.title}
+                        onChange={(event) => updateSelectedClip({ title: event.target.value })}
+                      />
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <div>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          In
+                        </Typography.Text>
+                        <InputNumber
+                          className="mt-1"
+                          min={0}
+                          value={selectedClip.inSec}
+                          onChange={(value) => updateSelectedClip({ inSec: Number(value ?? 0) })}
+                          style={{ width: "100%" }}
+                        />
+                      </div>
+                      <div>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          Out
+                        </Typography.Text>
+                        <InputNumber
+                          className="mt-1"
+                          min={selectedClip.inSec}
+                          value={selectedClip.outSec}
+                          onChange={(value) => updateSelectedClip({ outSec: Number(value ?? selectedClip.inSec) })}
+                          style={{ width: "100%" }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                        转场
+                      </Typography.Text>
+                      <Select<ClipTransition>
+                        className="mt-1"
+                        value={selectedClip.transition}
+                        onChange={(value) => updateSelectedClip({ transition: value })}
+                        style={{ width: "100%" }}
+                        options={[
+                          { value: "none", label: transitionLabel("none") },
+                          { value: "cut", label: transitionLabel("cut") },
+                          { value: "fade", label: transitionLabel("fade") },
+                          { value: "dissolve", label: transitionLabel("dissolve") },
+                          { value: "wipe_left", label: transitionLabel("wipe_left") },
+                          { value: "fade_black", label: transitionLabel("fade_black") },
+                        ]}
+                      />
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-[1fr_auto] items-center gap-3">
+                      <div>
+                        <Typography.Text strong style={{ fontSize: 12 }}>
+                          片段原声
+                        </Typography.Text>
+                        <div className="mt-1 text-[11px] text-[var(--af-muted)]">
+                          控制当前片段自带音频的预览与导出音量。
+                        </div>
+                      </div>
+                      <Switch
+                        checked={selectedClip.audioEnabled}
+                        onChange={(checked) => updateSelectedClip({ audioEnabled: checked })}
+                      />
+                    </div>
+                    <div className="mt-2">
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                        原声音量
+                      </Typography.Text>
+                      <InputNumber
+                        className="mt-1"
+                        min={0}
+                        max={200}
+                        value={selectedClip.audioVolume}
+                        onChange={(value) => updateSelectedClip({ audioVolume: Number(value ?? 100) })}
+                        style={{ width: "100%" }}
+                        addonAfter="%"
+                      />
+                    </div>
+
+                    <div className="mt-3 rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-white/70 p-3 text-[12px] text-[var(--af-text)]">
+                      <div>源素材：{selectedClip.resourceId ? (videoItemMap.get(selectedClip.resourceId)?.title ?? selectedClip.resourceId) : "未绑定"}</div>
+                      <div className="mt-1">源时长：{selectedClip.sourceDurationSec ? `${selectedClip.sourceDurationSec.toFixed(2)}s` : "读取中"}</div>
+                    </div>
+                  </div>
+                </>
               )}
-              <Tooltip title={inspectorExpanded ? "收起 Inspector" : "展开 Inspector"}>
-                <Button
-                  size="small"
-                  type="text"
-                  icon={inspectorExpanded ? <LeftOutlined /> : <RightOutlined />}
-                  onClick={() => setInspectorExpanded((prev) => !prev)}
-                />
-              </Tooltip>
-            </div>
 
-            {!inspectorExpanded ? (
-              <button
-                type="button"
-                className="flex flex-1 flex-col justify-between rounded-[18px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.74)] p-2 text-left transition hover:border-[rgba(47,107,95,0.28)] hover:bg-[rgba(255,253,249,0.92)]"
-                onClick={() => setInspectorExpanded(true)}
-              >
-                <div className="space-y-2">
-                  <div className="rounded-[14px] border border-[rgba(229,221,210,0.9)] bg-white/70 px-2 py-2">
-                    <div className="text-[9px] uppercase tracking-[0.12em] text-[var(--af-muted)]">Clip</div>
-                    <div className="mt-1 text-[13px] font-medium text-[var(--af-text)]">
-                      {selectedClip ? `#${selectedClipIndex + 1}` : "--"}
-                    </div>
-                  </div>
-                  <div className="rounded-[14px] border border-[rgba(229,221,210,0.9)] bg-white/70 px-2 py-2">
-                    <div className="text-[9px] uppercase tracking-[0.12em] text-[var(--af-muted)]">Len</div>
-                    <div className="mt-1 text-[12px] font-medium text-[var(--af-text)]">
-                      {selectedClip ? `${(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s` : "--"}
-                    </div>
-                  </div>
+              <div className="rounded-[18px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.76)] p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <Typography.Text strong>音频轨</Typography.Text>
+                  <Tag style={{ margin: 0 }}>{currentDocument.audioTracks.length}</Tag>
                 </div>
-                <div className="mt-2 text-center text-[10px] text-[var(--af-muted)]">
-                  点按展开
+                <div className="mt-1 text-[11px] text-[var(--af-muted)]">
+                  支持简单 BGM 轨：起点、截取区间、静音和音量。
                 </div>
-              </button>
-            ) : !selectedClip ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择时间线中的片段后可在这里精修。" />
-            ) : (
-              <>
-                <div>
-                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                    片段标题
-                  </Typography.Text>
+
+                <div className="mt-3 space-y-2">
                   <Input
-                    className="mt-1"
-                    value={selectedClip.title}
-                    onChange={(event) => updateSelectedClip({ title: event.target.value })}
+                    value={pendingAudioUrl}
+                    onChange={(event) => setPendingAudioUrl(event.target.value)}
+                    placeholder="输入可访问的音频 URL"
                   />
-                </div>
-
-                <div className="grid grid-cols-1 gap-3">
-                  <div>
-                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                      In
-                    </Typography.Text>
-                    <InputNumber
-                      className="mt-1"
-                      min={0}
-                      value={selectedClip.inSec}
-                      onChange={(value) => updateSelectedClip({ inSec: Number(value ?? 0) })}
-                      style={{ width: "100%" }}
-                    />
-                  </div>
-                  <div>
-                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                      Out
-                    </Typography.Text>
-                    <InputNumber
-                      className="mt-1"
-                      min={selectedClip.inSec}
-                      value={selectedClip.outSec}
-                      onChange={(value) => updateSelectedClip({ outSec: Number(value ?? selectedClip.inSec) })}
-                      style={{ width: "100%" }}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                    转场
-                  </Typography.Text>
-                  <Select<ClipTransition>
-                    className="mt-1"
-                    value={selectedClip.transition}
-                    onChange={(value) => updateSelectedClip({ transition: value })}
-                    style={{ width: "100%" }}
-                    options={[
-                      { value: "none", label: transitionLabel("none") },
-                      { value: "cut", label: transitionLabel("cut") },
-                      { value: "fade", label: transitionLabel("fade") },
-                      { value: "dissolve", label: transitionLabel("dissolve") },
-                      { value: "wipe_left", label: transitionLabel("wipe_left") },
-                      { value: "fade_black", label: transitionLabel("fade_black") },
-                    ]}
+                  <Input
+                    value={pendingAudioTitle}
+                    onChange={(event) => setPendingAudioTitle(event.target.value)}
+                    placeholder="音频标题（可选）"
                   />
+                  <Button size="small" onClick={handleAddAudioTrack}>
+                    添加音频轨
+                  </Button>
                 </div>
 
-                <div className="rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] p-3">
-                  <div className="text-[11px] text-[var(--af-muted)]">片段信息</div>
-                  <div className="mt-2 space-y-1 text-[12px] text-[var(--af-text)]">
-                    <div>时长：{(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s</div>
-                    <div>源素材：{selectedClip.resourceId ? (videoItemMap.get(selectedClip.resourceId)?.title ?? selectedClip.resourceId) : "未绑定"}</div>
-                    <div>源时长：{selectedClip.sourceDurationSec ? `${selectedClip.sourceDurationSec.toFixed(2)}s` : "未检测"}</div>
-                  </div>
+                <div className="mt-3 space-y-3">
+                  {currentDocument.audioTracks.length === 0 ? (
+                    <div className="rounded-[14px] border border-dashed border-[rgba(229,221,210,0.9)] px-3 py-3 text-[12px] text-[var(--af-muted)]">
+                      还没有音频轨。可直接粘贴音乐或旁白的 URL。
+                    </div>
+                  ) : currentDocument.audioTracks.map((track) => (
+                    <div
+                      key={track.id}
+                      className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-white/70 p-3"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <Input
+                          size="small"
+                          value={track.title}
+                          onChange={(event) => updateAudioTrack(track.id, { title: event.target.value })}
+                        />
+                        <Button
+                          size="small"
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => removeAudioTrack(track.id)}
+                        />
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <InputNumber
+                          size="small"
+                          min={0}
+                          value={track.startSec}
+                          onChange={(value) => updateAudioTrack(track.id, { startSec: Number(value ?? 0) })}
+                          style={{ width: "100%" }}
+                          addonBefore="起点"
+                        />
+                        <InputNumber
+                          size="small"
+                          min={0}
+                          max={200}
+                          value={track.volume}
+                          onChange={(value) => updateAudioTrack(track.id, { volume: Number(value ?? 100) })}
+                          style={{ width: "100%" }}
+                          addonAfter="%"
+                        />
+                        <InputNumber
+                          size="small"
+                          min={0}
+                          value={track.sourceInSec}
+                          onChange={(value) => updateAudioTrack(track.id, { sourceInSec: Number(value ?? 0) })}
+                          style={{ width: "100%" }}
+                          addonBefore="In"
+                        />
+                        <InputNumber
+                          size="small"
+                          min={track.sourceInSec}
+                          value={track.sourceOutSec}
+                          onChange={(value) => updateAudioTrack(track.id, { sourceOutSec: Number(value ?? track.sourceInSec) })}
+                          style={{ width: "100%" }}
+                          addonBefore="Out"
+                        />
+                      </div>
+                      <div className="mt-2 flex items-center justify-between gap-3">
+                        <div className="text-[11px] text-[var(--af-muted)]">
+                          源长 {track.sourceDurationSec ? `${track.sourceDurationSec.toFixed(2)}s` : "读取中"}
+                        </div>
+                        <Switch
+                          size="small"
+                          checked={!track.muted}
+                          onChange={(checked) => updateAudioTrack(track.id, { muted: !checked })}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              </>
-            )}
-          </div>
-        </Card>
+              </div>
+            </div>
+          </Card>
 
         <div className="flex min-h-0 flex-col gap-2">
           <Card
             className="ceramic-panel !border-transparent"
             title="Preview"
             extra={(
-              isProgramPlaying ? (
-                <Button size="small" danger icon={<PauseCircleOutlined />} onClick={stopProgramPlayback}>
-                  停止
+              <Space size={8}>
+                {isProgramPlaying ? (
+                  <Button size="small" danger icon={<PauseCircleOutlined />} onClick={stopProgramPlayback}>
+                    停止
+                  </Button>
+                ) : (
+                  <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={startProgramPlayback}>
+                    播放
+                  </Button>
+                )}
+                <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => void handleExportVideo()}>
+                  导出视频
                 </Button>
-              ) : (
-                <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={startProgramPlayback}>
-                  播放
-                </Button>
-              )
+              </Space>
             )}
           >
           {previewClip?.url ? (
-            <video
-              ref={programVideoRef}
-              src={previewClip.url}
-              controls={!isProgramPlaying}
-              className="h-60 w-full rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-black object-contain"
-              onTimeUpdate={handleProgramTimeUpdate}
-              onEnded={() => {
-                if (isProgramPlaying) {
-                  advanceToNextClip();
-                }
-              }}
-            />
+            <div className="relative h-60 overflow-hidden rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-black">
+              <video
+                ref={programVideoRef}
+                src={previewClip.url}
+                controls={!isProgramPlaying}
+                className="absolute inset-0 h-full w-full object-contain"
+                style={previewTransitionStyle.primary}
+                onTimeUpdate={handleProgramTimeUpdate}
+                onEnded={() => {
+                  if (isProgramPlaying) {
+                    advanceToNextClip();
+                  }
+                }}
+              />
+              {previewTransitionState ? (
+                <>
+                  <video
+                    ref={programTransitionVideoRef}
+                    className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+                    style={previewTransitionStyle.incoming}
+                    playsInline
+                  />
+                  <div
+                    className="pointer-events-none absolute inset-0 bg-black"
+                    style={previewTransitionStyle.blackout}
+                  />
+                </>
+              ) : null}
+            </div>
           ) : (
             <div className="flex h-60 items-center justify-center rounded-[18px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[12px] text-[var(--af-muted)]">
               右侧素材栏拖入视频，或先在时间线选中片段。
@@ -2230,7 +3292,7 @@ export function ClipComposer({
                 Timeline
               </Typography.Text>
               <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                拖入视频即可拼接，整块片段可拖动排序，边缘可直接裁切。
+                视频按真实节目时长排布；转场重叠和音频轨都会直接反映在时间轴上。
               </Typography.Text>
             </div>
             <div className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] px-2.5 py-1.5">
@@ -2362,6 +3424,55 @@ export function ClipComposer({
                     主视频轨
                   </Typography.Text>
                 </div>
+                <div className="mb-2 flex items-center gap-2">
+                  <Tag color="green" style={{ margin: 0 }}>
+                    A1
+                  </Tag>
+                  <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
+                    音频轨
+                  </Typography.Text>
+                </div>
+                <div className="mb-3 rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.72)] px-2 py-2">
+                  <div className="relative h-12" style={{ minWidth: timelineTrackWidth }}>
+                    {audioTimelineSegments.length === 0 ? (
+                      <div className="flex h-full items-center justify-center text-[11px] text-[var(--af-muted)]">
+                        还没有音频轨
+                      </div>
+                    ) : audioTimelineSegments.map((segment) => (
+                      <div
+                        key={segment.track.id}
+                        className="group absolute top-1 h-10 overflow-hidden rounded-[12px] border border-[rgba(76,139,106,0.32)] bg-[rgba(111,178,132,0.18)] px-2 py-1 cursor-grab active:cursor-grabbing"
+                        style={{
+                          left: segment.startSec * timelinePixelsPerSecond,
+                          width: Math.max(64, segment.durationSec * timelinePixelsPerSecond),
+                          opacity: segment.track.muted ? 0.5 : 1,
+                        }}
+                        onMouseDown={(event) => handleAudioTrackMoveMouseDown(segment.track.id, event)}
+                      >
+                        <button
+                          type="button"
+                          aria-label={`${segment.track.title} 左侧裁切手柄`}
+                          className="absolute inset-y-1 left-0 z-10 w-2 rounded-l-[12px] bg-[rgba(47,107,95,0.16)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+                          onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "start", event)}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                        <button
+                          type="button"
+                          aria-label={`${segment.track.title} 右侧裁切手柄`}
+                          className="absolute inset-y-1 right-0 z-10 w-2 rounded-r-[12px] bg-[rgba(47,107,95,0.16)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+                          onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "end", event)}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                        <div className="truncate text-[11px] font-medium text-[var(--af-text)]">
+                          {segment.track.title}
+                        </div>
+                        <div className="truncate text-[10px] text-[var(--af-muted)]">
+                          {segment.track.startSec.toFixed(2)}s · {segment.durationSec.toFixed(2)}s · {segment.track.muted ? "静音" : `${segment.track.volume}%`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
 
                 {currentDocument.clips.length === 0 ? (
                   <div className="flex h-24 items-center justify-center rounded-[16px] border border-dashed border-[rgba(229,221,210,0.9)] text-[12px] text-[var(--af-muted)]">
@@ -2383,15 +3494,21 @@ export function ClipComposer({
                               index={segment.index}
                               timelineStartSec={segment.startSec}
                               timelineEndSec={segment.endSec}
+                              transitionOverlapSec={segment.overlapBeforeSec}
                               width={width}
                               compact={compact}
                               active={clip.id === currentDocument.selectedClipId}
-                            playing={isProgramPlaying
-                              ? programPlaybackIndex === segment.index
-                              : playheadSegment?.index === segment.index}
+                              playing={isProgramPlaying
+                                ? programPlaybackIndex === segment.index
+                                : playheadSegment?.index === segment.index}
                               onSelect={selectClip}
                               onDelete={removeClip}
                               onTrimMouseDown={handleTrimMouseDown}
+                              style={{
+                                marginLeft: segment.index === 0
+                                  ? 0
+                                  : -segment.overlapBeforeSec * timelinePixelsPerSecond,
+                              }}
                             />
                           );
                         })}
@@ -2422,9 +3539,24 @@ export function ClipComposer({
             placeholder={DEFAULT_PLAN_NAME}
           />
         </div>
-        <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => void persistPlan("manual")}>
-          保存剪辑计划
-        </Button>
+        <Space size={8}>
+          <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void handleExportVideo()}>
+            导出视频
+          </Button>
+          <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={() => void persistPlan("manual")}>
+            保存剪辑计划
+          </Button>
+        </Space>
+      </div>
+      <div className="hidden">
+        {currentDocument.audioTracks.map((track) => (
+          <audio
+            key={track.id}
+            ref={(element) => setAudioPreviewRef(track.id, element)}
+            src={track.url}
+            preload="auto"
+          />
+        ))}
       </div>
     </div>
   );

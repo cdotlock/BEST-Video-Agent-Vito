@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { saveClipPlan } from "@/lib/services/video-composition-service";
+import { exportClipPlanToMp4 } from "@/lib/services/video-export-service";
+
+export const runtime = "nodejs";
 
 const ClipTransitionSchema = z.enum([
   "none",
@@ -10,13 +12,9 @@ const ClipTransitionSchema = z.enum([
   "wipe_left",
   "fade_black",
 ]);
-const MonitorModeSchema = z.enum(["source", "program"]);
 
-const SaveClipPlanSchema = z.object({
-  key: z.string().min(1),
-  title: z.string().nullable().optional(),
-  category: z.string().min(1).optional().default("剪辑计划"),
-  saveMode: z.enum(["manual", "autosave"]).optional().default("manual"),
+const ExportClipPlanSchema = z.object({
+  planName: z.string().min(1),
   clips: z.array(
     z.object({
       id: z.string().min(1).nullable().optional(),
@@ -44,28 +42,9 @@ const SaveClipPlanSchema = z.object({
       muted: z.boolean().optional(),
     }),
   ).optional().default([]),
-  editorState: z.object({
-    selectedClipId: z.string().min(1).nullable().optional(),
-    selectedSourceResourceId: z.string().min(1).nullable().optional(),
-    sourceInSec: z.number().min(0),
-    sourceOutSec: z.number().min(0),
-    sourceDurationSec: z.number().min(0).nullable().optional(),
-    previewMode: MonitorModeSchema,
-    timelineZoom: z.number().min(8).max(120),
-    snapEnabled: z.boolean(),
-    snapStepSec: z.number().min(0.05).max(5),
-  }).nullable().optional(),
 });
 
-/**
- * POST /api/video/sequences/[sequenceId]/clip-plan
- * Save lightweight clip composition plan as domain_resources JSON.
- */
-export async function POST(
-  req: NextRequest,
-  context: { params: Promise<{ sequenceId: string }> },
-) {
-  const { sequenceId } = await context.params;
+export async function POST(req: NextRequest) {
   let raw: unknown;
   try {
     raw = await req.json();
@@ -73,19 +52,14 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const parsed = SaveClipPlanSchema.safeParse(raw);
+  const parsed = ExportClipPlanSchema.safeParse(raw);
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.message }, { status: 400 });
   }
 
   try {
-    const result = await saveClipPlan({
-      key: parsed.data.key,
-      title: parsed.data.title ?? null,
-      category: parsed.data.category,
-      scopeType: "sequence",
-      scopeId: sequenceId,
-      saveMode: parsed.data.saveMode,
+    const result = await exportClipPlanToMp4({
+      planName: parsed.data.planName,
       clips: parsed.data.clips.map((clip) => ({
         id: clip.id ?? null,
         resourceId: clip.resourceId ?? null,
@@ -109,23 +83,22 @@ export async function POST(
         volume: track.volume ?? 100,
         muted: track.muted ?? false,
       })),
-      editorState: parsed.data.editorState
-        ? {
-            selectedClipId: parsed.data.editorState.selectedClipId ?? null,
-            selectedSourceResourceId: parsed.data.editorState.selectedSourceResourceId ?? null,
-            sourceInSec: parsed.data.editorState.sourceInSec,
-            sourceOutSec: parsed.data.editorState.sourceOutSec,
-            sourceDurationSec: parsed.data.editorState.sourceDurationSec ?? null,
-            previewMode: parsed.data.editorState.previewMode,
-            timelineZoom: parsed.data.editorState.timelineZoom,
-            snapEnabled: parsed.data.editorState.snapEnabled,
-            snapStepSec: parsed.data.editorState.snapStepSec,
-          }
-        : null,
     });
-    return NextResponse.json(result);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: message }, { status: 500 });
+
+    const body = Uint8Array.from(result.buffer);
+
+    return new NextResponse(body, {
+      status: 200,
+      headers: {
+        "Content-Type": result.mimeType,
+        "Content-Length": String(result.buffer.byteLength),
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(result.fileName)}"`,
+        "X-Export-Duration-Sec": result.durationSec.toFixed(3),
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "导出失败";
+    const status = message.includes("缺少运行时依赖") ? 503 : 500;
+    return NextResponse.json({ error: message }, { status });
   }
 }

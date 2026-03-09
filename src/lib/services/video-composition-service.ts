@@ -56,6 +56,20 @@ export interface ClipPlanItemInput {
   transition: ClipTransition;
   title: string | null;
   sourceDurationSec?: number | null;
+  audioEnabled?: boolean;
+  audioVolume?: number;
+}
+
+export interface ClipAudioTrackInput {
+  id?: string | null;
+  title: string | null;
+  url: string | null;
+  startSec: number;
+  sourceInSec: number;
+  sourceOutSec: number;
+  sourceDurationSec?: number | null;
+  volume?: number;
+  muted?: boolean;
 }
 
 export interface ClipPlanEditorStateInput {
@@ -77,6 +91,7 @@ export interface SaveClipPlanInput {
   scopeType: "project" | "sequence";
   scopeId: string;
   clips: ClipPlanItemInput[];
+  audioTracks?: ClipAudioTrackInput[];
   editorState?: ClipPlanEditorStateInput | null;
   saveMode?: "manual" | "autosave";
 }
@@ -186,6 +201,25 @@ export async function saveClipPlan(
       transition: clip.transition,
       title: clip.title,
       sourceDurationSec: clip.sourceDurationSec ?? null,
+      audioEnabled: clip.audioEnabled ?? true,
+      audioVolume: clamp(clip.audioVolume ?? 100, 0, 200),
+    };
+  });
+  const normalizedAudioTracks = (input.audioTracks ?? []).map((track, index) => {
+    const sourceInSec = clamp(track.sourceInSec, 0, Number.MAX_SAFE_INTEGER);
+    const sourceOutSec = clamp(track.sourceOutSec, sourceInSec, Number.MAX_SAFE_INTEGER);
+    return {
+      id: track.id ?? `audio_${index + 1}`,
+      index,
+      title: track.title,
+      url: track.url,
+      startSec: clamp(track.startSec, 0, Number.MAX_SAFE_INTEGER),
+      sourceInSec,
+      sourceOutSec,
+      durationSec: Number((sourceOutSec - sourceInSec).toFixed(3)),
+      sourceDurationSec: track.sourceDurationSec ?? null,
+      volume: clamp(track.volume ?? 100, 0, 200),
+      muted: track.muted ?? false,
     };
   });
   const totalDurationSec = Number(
@@ -215,6 +249,7 @@ export async function saveClipPlan(
     saveMode,
     savedAt: new Date().toISOString(),
     clips: normalizedClips,
+    audioTracks: normalizedAudioTracks,
     totalDurationSec,
     editorState,
   };

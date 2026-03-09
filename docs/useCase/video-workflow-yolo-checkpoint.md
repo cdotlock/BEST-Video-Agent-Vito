@@ -199,8 +199,11 @@ curl -v -s -X POST http://localhost:8001/api/video/sequences/<SEQUENCE_ID>/clip-
     "title":"clip_plan_demo_v1",
     "saveMode":"manual",
     "clips":[
-      {"id":"clip-a","resourceId":null,"url":"https://example.com/a.mp4","inSec":0,"outSec":3.5,"transition":"cut","title":"clip-a","sourceDurationSec":6},
-      {"id":"clip-b","resourceId":null,"url":"https://example.com/b.mp4","inSec":1,"outSec":4.2,"transition":"fade","title":"clip-b","sourceDurationSec":8}
+      {"id":"clip-a","resourceId":null,"url":"https://example.com/a.mp4","inSec":0,"outSec":3.5,"transition":"cut","title":"clip-a","sourceDurationSec":6,"audioEnabled":true,"audioVolume":100},
+      {"id":"clip-b","resourceId":null,"url":"https://example.com/b.mp4","inSec":1,"outSec":4.2,"transition":"fade","title":"clip-b","sourceDurationSec":8,"audioEnabled":true,"audioVolume":80}
+    ],
+    "audioTracks":[
+      {"id":"bgm-1","title":"bgm","url":"https://example.com/bgm.mp3","startSec":0,"sourceInSec":0,"sourceOutSec":6,"sourceDurationSec":12,"volume":70,"muted":false}
     ],
     "editorState":{
       "selectedClipId":"clip-b",
@@ -218,6 +221,26 @@ curl -v -s -X POST http://localhost:8001/api/video/sequences/<SEQUENCE_ID>/clip-
 ```
 
 期望：返回 `resourceId` 与 `totalDurationSec`，且资源列表中出现 `format=timeline_v2`、`saveMode=manual` 的 `clip_plan` JSON 资产。
+
+### 12.1 导出时间线成视频
+
+```bash
+curl -v -X POST http://localhost:8001/api/video/sequences/<SEQUENCE_ID>/clip-plan/export \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "planName":"clip_plan_demo_v1",
+    "clips":[
+      {"id":"clip-a","resourceId":null,"url":"https://example.com/a.mp4","inSec":0,"outSec":3.5,"transition":"cut","title":"clip-a","sourceDurationSec":6,"audioEnabled":true,"audioVolume":100},
+      {"id":"clip-b","resourceId":null,"url":"https://example.com/b.mp4","inSec":1,"outSec":4.2,"transition":"fade","title":"clip-b","sourceDurationSec":8,"audioEnabled":true,"audioVolume":80}
+    ],
+    "audioTracks":[
+      {"id":"bgm-1","title":"bgm","url":"https://example.com/bgm.mp3","startSec":0,"sourceInSec":0,"sourceOutSec":6,"sourceDurationSec":12,"volume":70,"muted":false}
+    ]
+  }' \
+  --output temp/clip-plan-demo.mp4
+```
+
+期望：返回 `200` 且输出 `video/mp4` 文件；成片里可见 `fade` 转场，且背景音频与片段原声一起混出。
 
 ### 13. Asset Atlas 语义动作写回
 

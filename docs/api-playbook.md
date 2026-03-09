@@ -234,11 +234,18 @@ curl -X POST http://localhost:8001/api/video/tasks \
    - 最简输入：片段列表（顺序/in/out/transition）
    - `transition` 当前支持：`none | cut | fade | dissolve | wipe_left | fade_black`
    - 扩展输入：`saveMode=manual|autosave` + `editorState`
+   - clip 级额外字段：`audioEnabled / audioVolume`
+   - 顶层额外字段：`audioTracks[]`（`startSec/sourceInSec/sourceOutSec/volume/muted`）
    - 保存 `timeline_v2` clip plan 到 `domain_resources`（mediaType=json）
 3. Clip Studio 前端进入编辑态时：
    - 会按当前视频候选资源的顺序初始化时间线主舞台
    - 可一键触发 `AI 自动粗剪`，自动生成粗剪序列并落入时间线（用户仍可继续手调后保存）
+   - 时间线时长按真实节目时长计算：视频片段会扣除转场重叠，尾部音频轨会继续推长总时长
    - 右侧 Asset Atlas 继续独立显示，不在剪辑器内部复制左侧资产栏
+4. `POST /api/video/sequences/{sequenceId}/clip-plan/export`
+   - 输入当前 clip plan（`clips + audioTracks`）
+   - 服务端用 `ffmpeg/ffprobe` 拼接视频、应用转场、混合片段原声与简单音频轨
+   - 返回 `video/mp4` 二进制流供前端直接下载
 
 `editorState` 当前包含：
 
@@ -247,7 +254,7 @@ curl -X POST http://localhost:8001/api/video/tasks \
 - `previewMode=source|program`
 - `timelineZoom / snapEnabled / snapStepSec`
 
-**因果**：网格分镜和 clip plan 均是持久化中间资产；Clip Studio 依赖 `timeline_v2 + editorState` 完成自动保存、跨会话恢复与手工继续编辑。
+**因果**：网格分镜和 clip plan 均是持久化中间资产；Clip Studio 依赖 `timeline_v2 + audioTracks + editorState` 完成自动保存、跨会话恢复、音频编辑与手工继续编辑。前端导出前会先保存当前 plan，再调用 export route，保证下载结果与已持久化时间线一致。
 
 ### Asset Atlas 语义动作
 
@@ -273,7 +280,7 @@ curl -X POST http://localhost:8001/api/video/tasks \
 当用户在 Clip Studio 里手动保存时：
 
 1. `POST /api/video/sequences/{sequenceId}/clip-plan`
-   - 持久化 `timeline_v2 + editorState`
+   - 持久化 `timeline_v2 + audioTracks + editorState`
 2. 前端 best-effort 追加：
    - `POST /api/video/memory/path-review`
    - `POST /api/video/memory/feedback`
