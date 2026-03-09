@@ -392,7 +392,7 @@ export function ProSettingsPanel({
         workflowTemplate: draftConfig.workflowTemplate.trim(),
       },
     });
-    void message.success("Pro 配置已更新");
+    void message.success("专业模式配置已更新");
     onClose?.();
   };
 
@@ -919,7 +919,7 @@ export function ProSettingsPanel({
   const actionBar = (
     <div className="flex flex-wrap items-center justify-end gap-2">
       {onClose ? <Button onClick={onClose}>收起</Button> : null}
-      <Button type="primary" onClick={handleApply}>保存 Pro</Button>
+      <Button type="primary" onClick={handleApply}>保存专业模式</Button>
     </div>
   );
 
@@ -937,7 +937,7 @@ export function ProSettingsPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <Typography.Text strong style={{ fontSize: 15, color: "var(--af-text)" }}>
-            Director Pro
+            专业模式
           </Typography.Text>
           <div className="mt-1 text-[12px] text-[var(--af-muted)]">
             这里维护导演策略、长期知识、记忆与能力叠层。

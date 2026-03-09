@@ -18,7 +18,7 @@ export function ProSettingsDrawer({
 }: ProSettingsDrawerProps) {
   return (
     <Drawer
-      title="Pro 配置叠层"
+      title="专业模式"
       size={720}
       open={open}
       onClose={onClose}

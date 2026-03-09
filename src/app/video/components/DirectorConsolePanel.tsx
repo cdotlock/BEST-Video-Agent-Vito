@@ -581,8 +581,8 @@ function buildActionDeck(input: {
 
   actions.push({
     key: "open_pro",
-    title: "打开 Pro",
-    description: "长期知识、模板和记忆偏好仍在 Pro 里维护。",
+    title: "打开专业模式",
+    description: "长期知识、模板和记忆偏好仍在专业模式里维护。",
     kind: "pro",
   });
 
@@ -854,7 +854,7 @@ export function DirectorConsolePanel({
               items={[
                 {
                   key: "monitor",
-                  label: "Monitor",
+                  label: "导演台",
                   children: (
                     <div className="space-y-3">
                       <section className="rounded-[26px] p-4" style={ISLAND_CARD_STYLE}>
@@ -993,7 +993,7 @@ export function DirectorConsolePanel({
                 },
                 {
                   key: "pro",
-                  label: "Pro",
+                  label: "专业模式",
                   children: (
                     <ProSettingsPanel
                       active={isOpen && activeTab === "pro"}

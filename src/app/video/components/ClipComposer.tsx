@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
+  type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
   Alert,
@@ -19,7 +20,6 @@ import {
   Input,
   InputNumber,
   Select,
-  Slider,
   Space,
   Switch,
   Tag,
@@ -392,6 +392,22 @@ function createClipFromSource(
   };
 }
 
+function autoScrollTimelineViewport(viewport: HTMLDivElement, clientX: number): void {
+  const bounds = viewport.getBoundingClientRect();
+  const edgePadding = 72;
+
+  if (clientX > bounds.right - edgePadding) {
+    const speed = clamp((clientX - (bounds.right - edgePadding)) * 0.45, 12, 32);
+    viewport.scrollLeft += speed;
+    return;
+  }
+
+  if (clientX < bounds.left + edgePadding) {
+    const speed = clamp(((bounds.left + edgePadding) - clientX) * 0.45, 12, 32);
+    viewport.scrollLeft = Math.max(0, viewport.scrollLeft - speed);
+  }
+}
+
 function deriveEditingHints(document: ClipEditorDocument): string[] {
   if (document.clips.length === 0) return [];
   const durations = document.clips.map((clip) => Math.max(0, clip.outSec - clip.inSec));
@@ -605,8 +621,11 @@ function SortableClipBlock({
   const style: CSSProperties = {
     width,
     transform: CSS.Transform.toString(transform),
-    transition,
+    transition: isDragging ? undefined : transition,
     opacity: isDragging ? 0.82 : 1,
+    touchAction: "none",
+    willChange: isDragging ? "transform" : undefined,
+    zIndex: isDragging ? 3 : undefined,
   };
   return (
     <div
@@ -616,7 +635,7 @@ function SortableClipBlock({
         active
           ? "border-[var(--af-brand)] bg-[rgba(255,253,249,0.98)]"
           : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.9)]"
-      } ${playing ? "ring-2 ring-[rgba(76,139,106,0.35)]" : ""} cursor-grab active:cursor-grabbing`}
+      } ${playing ? "ring-2 ring-[rgba(76,139,106,0.35)]" : ""} cursor-grab select-none active:cursor-grabbing`}
       onClick={() => onSelect(clip.id)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -666,6 +685,7 @@ function SortableClipBlock({
             type="text"
             danger
             icon={<DeleteOutlined />}
+            onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();
               onDelete(clip.id);
@@ -701,6 +721,10 @@ export function ClipComposer({
   const programAdvancingRef = useRef(false);
   const lastPersistedSnapshotRef = useRef("");
   const lastQueuedTokenRef = useRef<string | null>(null);
+  const trimAnimationFrameRef = useRef<number | null>(null);
+  const trimPendingClientXRef = useRef<number | null>(null);
+  const scrubAnimationFrameRef = useRef<number | null>(null);
+  const scrubPendingClientXRef = useRef<number | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [autosaveState, setAutosaveState] = useState<"idle" | "pending" | "saving" | "saved" | "error">("idle");
@@ -715,7 +739,7 @@ export function ClipComposer({
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: { distance: 4 },
+      activationConstraint: { distance: 1 },
     }),
   );
 
@@ -874,6 +898,17 @@ export function ClipComposer({
       };
     });
   }, [normalizeDocument]);
+
+  useEffect(() => {
+    return () => {
+      if (trimAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(trimAnimationFrameRef.current);
+      }
+      if (scrubAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(scrubAnimationFrameRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (editor.bootstrapped) return;
@@ -1622,8 +1657,8 @@ export function ClipComposer({
       ? Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1))
       : Math.max(12, currentDocument.timelineZoom * 1.05);
 
-    const onMove = (moveEvent: MouseEvent) => {
-      const deltaSec = (moveEvent.clientX - initialClientX) / Math.max(pixelsPerSecond, 0.001);
+    const applyTrimAtClientX = (clientX: number) => {
+      const deltaSec = (clientX - initialClientX) / Math.max(pixelsPerSecond, 0.001);
       commitDocument((current) => ({
         ...current,
         clips: current.clips.map((clip) => {
@@ -1654,9 +1689,33 @@ export function ClipComposer({
       }), { recordHistory: false });
     };
 
+    const onMove = (moveEvent: MouseEvent) => {
+      const viewport = timelineViewportRef.current;
+      if (viewport) {
+        autoScrollTimelineViewport(viewport, moveEvent.clientX);
+      }
+      trimPendingClientXRef.current = moveEvent.clientX;
+      if (trimAnimationFrameRef.current !== null) return;
+      trimAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        trimAnimationFrameRef.current = null;
+        const nextClientX = trimPendingClientXRef.current;
+        trimPendingClientXRef.current = null;
+        if (nextClientX === null) return;
+        applyTrimAtClientX(nextClientX);
+      });
+    };
+
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      if (trimAnimationFrameRef.current !== null) {
+        cancelAnimationFrame(trimAnimationFrameRef.current);
+        trimAnimationFrameRef.current = null;
+      }
+      if (trimPendingClientXRef.current !== null) {
+        applyTrimAtClientX(trimPendingClientXRef.current);
+        trimPendingClientXRef.current = null;
+      }
       setEditor((prev) => {
         const currentSerialized = serializeDocument(prev.present);
         const historySerialized = serializeDocument(prev.history[prev.historyIndex] ?? prev.present);
@@ -1823,6 +1882,9 @@ export function ClipComposer({
     ),
     [timelinePixelsPerSecond, timelineViewportWidth, totalDuration],
   );
+  const timelineZoomLabel = fitTimelineToView
+    ? "适配"
+    : `${Math.round((currentDocument.timelineZoom / DEFAULT_TIMELINE_ZOOM) * 100)}%`;
 
   const seekPlayhead = useCallback((nextSec: number) => {
     const clampedSec = clamp(nextSec, 0, totalDuration);
@@ -1841,13 +1903,28 @@ export function ClipComposer({
   }, [commitDocument, timelineSegments, totalDuration]);
 
   const scrubTimelineAtClientX = useCallback((clientX: number) => {
-    const viewport = timelineViewportRef.current;
-    if (!viewport) return;
-    const bounds = viewport.getBoundingClientRect();
-    const localX = clientX - bounds.left + viewport.scrollLeft;
-    const nextSec = clamp(localX / timelinePixelsPerSecond, 0, totalDuration);
-    seekPlayhead(nextSec);
+    scrubPendingClientXRef.current = clientX;
+    if (scrubAnimationFrameRef.current !== null) return;
+    scrubAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      scrubAnimationFrameRef.current = null;
+      const nextClientX = scrubPendingClientXRef.current;
+      scrubPendingClientXRef.current = null;
+      if (nextClientX === null) return;
+      const viewport = timelineViewportRef.current;
+      if (!viewport) return;
+      const bounds = viewport.getBoundingClientRect();
+      autoScrollTimelineViewport(viewport, nextClientX);
+      const localX = nextClientX - bounds.left + viewport.scrollLeft;
+      const nextSec = clamp(localX / timelinePixelsPerSecond, 0, totalDuration);
+      seekPlayhead(nextSec);
+    });
   }, [seekPlayhead, timelinePixelsPerSecond, totalDuration]);
+
+  const handleTimelineWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    if (!event.metaKey && !event.ctrlKey) return;
+    event.preventDefault();
+    adjustTimelineZoom(event.deltaY > 0 ? -4 : 4);
+  }, [adjustTimelineZoom]);
 
   const handleTimelineRulerMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1981,14 +2058,14 @@ export function ClipComposer({
       <div className="overflow-x-auto pb-1">
         <div
           className="grid min-w-[860px] gap-3"
-          style={{ gridTemplateColumns: `${inspectorExpanded ? 224 : 76}px minmax(0, 1fr)` }}
+          style={{ gridTemplateColumns: `${inspectorExpanded ? 220 : 88}px minmax(0, 1fr)` }}
         >
         <Card
           className="ceramic-panel !border-transparent"
           styles={{ body: { padding: inspectorExpanded ? 16 : 12 } }}
         >
           <div className={`flex h-full flex-col ${inspectorExpanded ? "gap-4" : "gap-3"}`}>
-            <div className={`flex items-center ${inspectorExpanded ? "justify-between" : "justify-center"}`}>
+            <div className={`flex items-center ${inspectorExpanded ? "justify-between" : "justify-between"}`}>
               {inspectorExpanded ? (
                 <div className="min-w-0">
                   <Typography.Text strong style={{ fontSize: 13 }}>
@@ -1998,7 +2075,11 @@ export function ClipComposer({
                     {selectedClip ? `片段 #${selectedClipIndex + 1}` : "选择片段后精修"}
                   </div>
                 </div>
-              ) : null}
+              ) : (
+                <div className="text-[10px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                  Edit
+                </div>
+              )}
               <Tooltip title={inspectorExpanded ? "收起 Inspector" : "展开 Inspector"}>
                 <Button
                   size="small"
@@ -2010,15 +2091,29 @@ export function ClipComposer({
             </div>
 
             {!inspectorExpanded ? (
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
-                <Tag style={{ margin: 0 }}>{selectedClip ? `#${selectedClipIndex + 1}` : "无片段"}</Tag>
-                <div className="text-[11px] text-[var(--af-muted)]">
-                  {selectedClip ? `${(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s` : "点击展开"}
+              <button
+                type="button"
+                className="flex flex-1 flex-col justify-between rounded-[18px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.74)] p-2 text-left transition hover:border-[rgba(47,107,95,0.28)] hover:bg-[rgba(255,253,249,0.92)]"
+                onClick={() => setInspectorExpanded(true)}
+              >
+                <div className="space-y-2">
+                  <div className="rounded-[14px] border border-[rgba(229,221,210,0.9)] bg-white/70 px-2 py-2">
+                    <div className="text-[9px] uppercase tracking-[0.12em] text-[var(--af-muted)]">Clip</div>
+                    <div className="mt-1 text-[13px] font-medium text-[var(--af-text)]">
+                      {selectedClip ? `#${selectedClipIndex + 1}` : "--"}
+                    </div>
+                  </div>
+                  <div className="rounded-[14px] border border-[rgba(229,221,210,0.9)] bg-white/70 px-2 py-2">
+                    <div className="text-[9px] uppercase tracking-[0.12em] text-[var(--af-muted)]">Len</div>
+                    <div className="mt-1 text-[12px] font-medium text-[var(--af-text)]">
+                      {selectedClip ? `${(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s` : "--"}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-[10px] text-[var(--af-muted)]">
-                  {selectedClip?.transition ? transitionLabel(selectedClip.transition) : "Inspector"}
+                <div className="mt-2 text-center text-[10px] text-[var(--af-muted)]">
+                  点按展开
                 </div>
-              </div>
+              </button>
             ) : !selectedClip ? (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择时间线中的片段后可在这里精修。" />
             ) : (
@@ -2179,29 +2274,23 @@ export function ClipComposer({
                 >
                   全局
                 </Button>
-                <Tooltip title="缩小">
-                  <Button size="small" icon={<MinusOutlined />} onClick={() => adjustTimelineZoom(-8)} />
-                </Tooltip>
-                <div className="flex min-w-[180px] items-center gap-1.5">
+                <div className="inline-flex items-center gap-1 rounded-full border border-[rgba(229,221,210,0.9)] bg-white px-2 py-1">
+                  <span className="pr-1 text-[10px] uppercase tracking-[0.12em] text-[var(--af-muted)]">
+                    Zoom
+                  </span>
                   <ZoomOutOutlined className="text-[11px] text-[var(--af-muted)]" />
-                  <Slider
-                    min={8}
-                    max={120}
-                    value={currentDocument.timelineZoom}
-                    onChange={(value) => {
-                      if (typeof value !== "number") return;
-                      setFitTimelineToView(false);
-                      commitDocument((current) => ({
-                        ...current,
-                        timelineZoom: value,
-                      }), { recordHistory: false });
-                    }}
-                  />
+                  <Tooltip title="缩小">
+                    <Button size="small" type="text" icon={<MinusOutlined />} onClick={() => adjustTimelineZoom(-8)} />
+                  </Tooltip>
+                  <span className="min-w-[54px] text-center text-[11px] text-[var(--af-text)]">
+                    {timelineZoomLabel}
+                  </span>
+                  <Tooltip title="放大">
+                    <Button size="small" type="text" icon={<PlusOutlined />} onClick={() => adjustTimelineZoom(8)} />
+                  </Tooltip>
                   <ZoomInOutlined className="text-[11px] text-[var(--af-muted)]" />
                 </div>
-                <Tooltip title="放大">
-                  <Button size="small" icon={<PlusOutlined />} onClick={() => adjustTimelineZoom(8)} />
-                </Tooltip>
+                <span className="text-[11px] text-[var(--af-muted)]">Ctrl/Command + 滚轮</span>
                 <span className="mx-1 h-5 w-px shrink-0 bg-[rgba(229,221,210,0.92)]" />
                 <span className="text-[11px] text-[var(--af-muted)]">吸附</span>
                 <Switch
@@ -2236,6 +2325,7 @@ export function ClipComposer({
 
             <div
               ref={timelineViewportRef}
+              onWheel={handleTimelineWheel}
               onDragOver={handleTimelineDragOver}
               onDragLeave={handleTimelineDragLeave}
               onDrop={handleTimelineDrop}
