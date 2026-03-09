@@ -145,7 +145,7 @@ curl -X POST http://localhost:8001/api/video/tasks \
 
 当前前端落地约定：
 
-- Pro 固定收进灵动岛展开态，并分为 `Knowledge / Templates / Atelier / Memory / Review / Capabilities`
+- Pro 固定收进灵动岛展开态，并分为 `Knowledge / Workflow / Strategy / Memory / Capabilities`
 - `Memory` tab 会读取 `/api/video/memory/recommendations` 与 `/api/video/memory/path-recommendations`
 - `Capabilities` 仅展示已绑定的 MCP / Skill 叠层，不直接暴露源码编辑
 
@@ -253,17 +253,20 @@ curl -X POST http://localhost:8001/api/video/tasks \
 
 右侧 Asset Atlas 的快捷动作不是纯前端局部状态：
 
-1. `设为首帧 / 设为尾帧 / 角色锚点 / 空镜锚点`
+1. `用于当前镜头起始帧 / 用于当前镜头结束帧`
+   - 前端通过 `onInjectMessage` 注入上下文化指令，显式告诉 Agent 该图片服务的是当前镜头起点或终点
+   - 起始帧指令会显式强调优先 `first_frame`，只有在结尾落点也明确时才允许走 `first_last_frame`
+2. `角色锚点 / 空镜锚点`
    - 前端调用 `PATCH /api/video/sequences/{sequenceId}/resources`
    - 将 `domain_resources.data.semanticRole` 更新为对应角色
-2. 下次 `POST /api/video/tasks`
+3. 下次 `POST /api/video/tasks`
    - `VideoContextProvider -> Prompt Compiler` 会重新读取资源语义
-   - `workflow_graph / task_intent / hidden_ops` 自动抬高对应路径
-3. `加入粗剪`
+   - `workflow_graph / task_intent / hidden_ops` 自动抬高对应路径，同时保持 `first_frame` 与 `first_last_frame` 的策略边界
+4. `加入时间线`
    - 先在前端把资源送入 Clip Studio 时间线
    - 只有保存 clip plan 后，才会持久化为新的 `clip_plan` 资产
 
-**因果**：首帧/尾帧/角色/空镜这些选择是可 recall 的资源语义，而不是会在长对话里丢失的瞬时消息。
+**因果**：长期语义锚点仍然会被持久化 recall；而当前镜头的起始帧/结束帧则走上下文化注入，避免“看不见 slot”导致的误用。
 
 ### Clip Studio 主动记忆写回
 
@@ -296,7 +299,7 @@ MCP `video_mgr` 新增 `video_mgr__save_dialogue_script`：
    - 默认行为：若当前 sequence 已存在 `dialogue_script_current`，直接复用
    - `force=true` 时重新基于剧情与当前素材摘要生成一份新草稿
 2. 项目页选中 sequence 后：
-   - 若当前工作区存在剧情线索且还没有 `dialogue_ref`
+   - 若当前序列存在剧情线索且还没有 `dialogue_ref`
    - 前端会自动调用一次上述接口，补一份默认对白脚本 JSON
 3. 灵动岛中的“生成台词稿”动作与自动补全共用同一接口，只是显式触发时会走 `force=true`
 

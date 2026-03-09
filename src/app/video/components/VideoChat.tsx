@@ -49,11 +49,6 @@ export interface VideoChatProps {
   onConsumeQueuedClipResource?: () => void;
 }
 
-function executionModeHint(mode: ExecutionMode): string {
-  if (mode === "yolo") return "YOLO 偏好：默认连续执行，仅在缺输入或硬失败时停下";
-  return "Checkpoint 偏好：关键动作倾向先确认，普通生成直接推进";
-}
-
 export function VideoChat({
   initialSessionId,
   videoContext,
@@ -144,7 +139,7 @@ export function VideoChat({
         {!videoContext && (
           <Alert
             type="info"
-            title="可以直接输入一句话开始创作，系统会自动初始化工作区。"
+            title="可以直接输入一句话开始创作，系统会自动初始化当前序列。"
             showIcon
             style={{ margin: "4px 8px 0" }}
             banner
@@ -208,7 +203,6 @@ export function VideoChat({
                 ))}
               </div>
             )}
-            <div className="mb-1 text-[11px] text-[var(--af-muted)]">{executionModeHint(executionMode)}</div>
             {pendingImages.length > 0 && (
               <div className="mb-1.5 flex flex-wrap gap-1.5">
                 {pendingImages.map((url, i) => (

@@ -22,8 +22,6 @@ import {
   LinkOutlined,
   ScissorOutlined,
   SyncOutlined,
-  VerticalAlignBottomOutlined,
-  VerticalAlignTopOutlined,
 } from "@ant-design/icons";
 import { z } from "zod";
 import type { DomainResources, DomainResource } from "../types";
@@ -110,9 +108,9 @@ function getReferenceRoleLabel(resource: DomainResource): string | null {
     case "motion_ref":
       return "动作";
     case "first_frame_ref":
-      return "首帧";
+      return "起始帧";
     case "last_frame_ref":
-      return "尾帧";
+      return "结束帧";
     case "storyboard_ref":
       return "分镜";
     case "dialogue_ref":
@@ -228,6 +226,23 @@ function buildRerollInstruction(resource: DomainResource, prompt: string): strin
   ].join("\n");
 }
 
+function buildCurrentShotInstruction(
+  resource: DomainResource,
+  slot: "start_frame" | "end_frame",
+): string {
+  const slotLabel = slot === "start_frame" ? "起始帧参考" : "结束帧参考";
+  const strategyHint = slot === "start_frame"
+    ? "若本轮只需要起始约束，请明确走 first_frame，不要自动升级到 first_last_frame。"
+    : "只有当本轮明确需要起止约束时，才把它作为尾帧并走 first_last_frame。";
+  return [
+    `请把以下素材作为当前镜头的${slotLabel}。`,
+    `resource_id=${resource.id}`,
+    `resource_title=${resource.title ?? "untitled"}`,
+    `resource_media_type=${resource.mediaType}`,
+    strategyHint,
+  ].join("\n");
+}
+
 function buildSemanticRolePayload(resource: DomainResource, role: VideoReferenceRole): unknown {
   const normalized = normalizeResourceData(resource.data);
   if (isPlainObject(normalized)) {
@@ -245,9 +260,9 @@ function buildSemanticRolePayload(resource: DomainResource, role: VideoReference
 function semanticRoleActionLabel(role: VideoReferenceRole): string {
   switch (role) {
     case "first_frame_ref":
-      return "首帧参考";
+      return "起始帧参考";
     case "last_frame_ref":
-      return "尾帧参考";
+      return "结束帧参考";
     case "character_ref":
       return "角色锚点";
     case "empty_shot_ref":
@@ -457,7 +472,7 @@ export function ResourcePanel({
     role: VideoReferenceRole,
   ) => {
     if (!sequenceId) {
-      void message.warning("请先创建或选择工作区。");
+      void message.warning("请先创建或选择序列。");
       return;
     }
 
@@ -477,13 +492,33 @@ export function ResourcePanel({
     }
   }, [message, onRefresh, sequenceId]);
 
+  const handleUseForCurrentShot = useCallback((
+    resource: DomainResource,
+    slot: "start_frame" | "end_frame",
+  ) => {
+    if (!onInjectMessage) {
+      void message.warning("当前页面无法把素材注入到当前镜头。");
+      return;
+    }
+    if (resource.mediaType !== "image" || !resource.url) {
+      void message.warning("当前镜头的起始帧/结束帧引用仅支持图片素材。");
+      return;
+    }
+    onInjectMessage(buildCurrentShotInstruction(resource, slot));
+    void message.success(
+      slot === "start_frame"
+        ? "已作为当前镜头的起始帧参考发到对话。"
+        : "已作为当前镜头的结束帧参考发到对话。",
+    );
+  }, [message, onInjectMessage]);
+
   const handleQueueClip = useCallback((resource: DomainResource) => {
     if (!onQueueClipResource) {
       void message.warning("当前页面无法直接送入剪辑台。");
       return;
     }
     if (resource.mediaType !== "video" || !resource.url) {
-      void message.warning("仅已生成的视频素材可以加入粗剪。");
+      void message.warning("仅已生成的视频素材可以加入时间线。");
       return;
     }
     onQueueClipResource(resource);
@@ -823,8 +858,8 @@ export function ResourcePanel({
                 {roleCounts.character_ref > 0 && <Tag color="blue" style={{ margin: 0 }}>角色 {roleCounts.character_ref}</Tag>}
                 {roleCounts.empty_shot_ref > 0 && <Tag color="cyan" style={{ margin: 0 }}>空镜 {roleCounts.empty_shot_ref}</Tag>}
                 {roleCounts.storyboard_ref > 0 && <Tag color="purple" style={{ margin: 0 }}>分镜 {roleCounts.storyboard_ref}</Tag>}
-                {roleCounts.first_frame_ref > 0 && <Tag color="gold" style={{ margin: 0 }}>首帧 {roleCounts.first_frame_ref}</Tag>}
-                {roleCounts.last_frame_ref > 0 && <Tag color="gold" style={{ margin: 0 }}>尾帧 {roleCounts.last_frame_ref}</Tag>}
+                {roleCounts.first_frame_ref > 0 && <Tag color="gold" style={{ margin: 0 }}>起始帧 {roleCounts.first_frame_ref}</Tag>}
+                {roleCounts.last_frame_ref > 0 && <Tag color="gold" style={{ margin: 0 }}>结束帧 {roleCounts.last_frame_ref}</Tag>}
                 {Object.values(roleCounts).every((value) => value === 0) && (
                   <Tag style={{ margin: 0 }}>尚未建立语义锚点</Tag>
                 )}
@@ -920,24 +955,6 @@ export function ResourcePanel({
                             >
                               @该素材
                             </Button>
-                            {(isImage || isVideo) && (
-                              <Button
-                                size="small"
-                                icon={<VerticalAlignTopOutlined />}
-                                onClick={() => void handleAssignSemanticRole(resource, "first_frame_ref")}
-                              >
-                                首帧
-                              </Button>
-                            )}
-                            {(isImage || isVideo) && (
-                              <Button
-                                size="small"
-                                icon={<VerticalAlignBottomOutlined />}
-                                onClick={() => void handleAssignSemanticRole(resource, "last_frame_ref")}
-                              >
-                                尾帧
-                              </Button>
-                            )}
                             {isVideo && resource.url && (
                               <Button
                                 size="small"
@@ -1027,20 +1044,14 @@ export function ResourcePanel({
                   <Button type="primary" icon={<LinkOutlined />} onClick={() => handleAtMaterial(selectedResource)}>
                     @该素材
                   </Button>
-                  {(selectedResource.mediaType === "image" || selectedResource.mediaType === "video") && (
-                    <Button
-                      icon={<VerticalAlignTopOutlined />}
-                      onClick={() => void handleAssignSemanticRole(selectedResource, "first_frame_ref")}
-                    >
-                      设为首帧
+                  {selectedResource.mediaType === "image" && selectedResource.url && (
+                    <Button onClick={() => handleUseForCurrentShot(selectedResource, "start_frame")}>
+                      用于当前镜头起始帧
                     </Button>
                   )}
-                  {(selectedResource.mediaType === "image" || selectedResource.mediaType === "video") && (
-                    <Button
-                      icon={<VerticalAlignBottomOutlined />}
-                      onClick={() => void handleAssignSemanticRole(selectedResource, "last_frame_ref")}
-                    >
-                      设为尾帧
+                  {selectedResource.mediaType === "image" && selectedResource.url && (
+                    <Button onClick={() => handleUseForCurrentShot(selectedResource, "end_frame")}>
+                      用于当前镜头结束帧
                     </Button>
                   )}
                   {selectedResource.mediaType === "image" && (

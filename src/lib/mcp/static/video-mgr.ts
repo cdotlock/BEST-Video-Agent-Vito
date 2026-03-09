@@ -54,6 +54,12 @@ type VideoGenerationStrategy =
   | "first_last_frame"
   | "mixed_refs";
 
+interface ResolvedVideoStrategy {
+  strategy: VideoGenerationStrategy;
+  ignoredLastFrame: boolean;
+  reason: string;
+}
+
 function dedupeUrls(urls: string[]): string[] {
   const seen = new Set<string>();
   const output: string[] = [];
@@ -107,7 +113,7 @@ function resolveVideoStrategy(input: {
   firstFrameUrl: string | null;
   lastFrameUrl: string | null;
   referenceVideoUrls: string[];
-}): VideoGenerationStrategy {
+}): ResolvedVideoStrategy {
   const {
     requestedStrategy,
     sourceImageUrl,
@@ -116,24 +122,73 @@ function resolveVideoStrategy(input: {
     referenceVideoUrls,
   } = input;
 
-  if (requestedStrategy === "mixed_refs") return "mixed_refs";
+  const hasFirstFrame = Boolean(firstFrameUrl || sourceImageUrl);
+  const hasLastFrame = Boolean(lastFrameUrl);
+  const hasVideoRefs = referenceVideoUrls.length > 0;
+
+  if (requestedStrategy === "mixed_refs") {
+    return {
+      strategy: "mixed_refs",
+      ignoredLastFrame: false,
+      reason: "explicit_mixed_refs",
+    };
+  }
   if (requestedStrategy === "first_last_frame") {
-    return firstFrameUrl && lastFrameUrl ? "first_last_frame" : "first_frame";
+    if (hasFirstFrame && hasLastFrame) {
+      return {
+        strategy: "first_last_frame",
+        ignoredLastFrame: false,
+        reason: "explicit_first_last_frame",
+      };
+    }
+    return {
+      strategy: hasFirstFrame ? "first_frame" : "prompt_only",
+      ignoredLastFrame: hasLastFrame,
+      reason: hasFirstFrame
+        ? "downgraded_missing_tail_frame"
+        : "downgraded_missing_first_frame",
+    };
   }
   if (requestedStrategy === "first_frame") {
-    return firstFrameUrl || sourceImageUrl ? "first_frame" : "prompt_only";
+    return {
+      strategy: hasFirstFrame ? "first_frame" : "prompt_only",
+      ignoredLastFrame: hasLastFrame,
+      reason: hasFirstFrame
+        ? "explicit_first_frame"
+        : "downgraded_missing_first_frame",
+    };
   }
   if (requestedStrategy === "prompt_only") {
-    if (referenceVideoUrls.length > 0) return "mixed_refs";
-    if ((firstFrameUrl || sourceImageUrl) && lastFrameUrl) return "first_last_frame";
-    if (firstFrameUrl || sourceImageUrl) return "first_frame";
-    return "prompt_only";
+    return {
+      strategy: "prompt_only",
+      ignoredLastFrame: hasLastFrame,
+      reason: "explicit_prompt_only",
+    };
   }
 
-  if (referenceVideoUrls.length > 0) return "mixed_refs";
-  if ((firstFrameUrl || sourceImageUrl) && lastFrameUrl) return "first_last_frame";
-  if (firstFrameUrl || sourceImageUrl) return "first_frame";
-  return "prompt_only";
+  if (hasVideoRefs) {
+    return {
+      strategy: "mixed_refs",
+      ignoredLastFrame: false,
+      reason: "inferred_video_refs",
+    };
+  }
+  if (hasFirstFrame) {
+    return {
+      strategy: "first_frame",
+      ignoredLastFrame: hasLastFrame,
+      reason: hasLastFrame
+        ? "inferred_first_frame_tail_ignored"
+        : "inferred_first_frame",
+    };
+  }
+  return {
+    strategy: "prompt_only",
+    ignoredLastFrame: hasLastFrame,
+    reason: hasLastFrame
+      ? "inferred_prompt_only_tail_ignored"
+      : "inferred_prompt_only",
+  };
 }
 
 function buildRuntimeVideoPrompt(basePrompt: string, dialogueContext: string | undefined): string {
@@ -400,7 +455,7 @@ export const videoMgrMcp: McpProvider = {
                 properties: {
                   key: { type: "string", description: "Unique semantic key for this video within the session (e.g. video_shot_1_3, video_scene_2_opening)" },
                   prompt: { type: "string", description: "Motion/animation prompt describing the desired video effect" },
-                  strategy: { type: "string", enum: ["prompt_only", "first_frame", "first_last_frame", "mixed_refs"], description: "Optional video generation strategy. If omitted or set to prompt_only, the provider may infer a richer strategy from first/last frame or mixed refs." },
+                  strategy: { type: "string", enum: ["prompt_only", "first_frame", "first_last_frame", "mixed_refs"], description: "Optional video generation strategy. `first_last_frame` must be explicit. If omitted, the provider infers conservatively and will not silently upgrade a first-frame route into first-last-frame just because a tail frame exists." },
                   sourceImageUrl: { type: "string", description: "Optional source image URL (typically from generate_image output) to animate" },
                   firstFrameUrl: { type: "string", description: "First frame reference URL" },
                   lastFrameUrl: { type: "string", description: "Last frame reference URL (for first_last_frame strategy)" },
@@ -716,13 +771,17 @@ export const videoMgrMcp: McpProvider = {
                 : mergedRefs.imageUrls;
               const firstFrameUrl = item.firstFrameUrl ?? mergedRefs.firstFrameUrl ?? item.sourceImageUrl ?? null;
               const lastFrameUrl = item.lastFrameUrl ?? mergedRefs.lastFrameUrl ?? null;
-              const resolvedStrategy = resolveVideoStrategy({
+              const resolved = resolveVideoStrategy({
                 requestedStrategy: item.strategy,
                 sourceImageUrl: item.sourceImageUrl,
                 firstFrameUrl,
                 lastFrameUrl,
                 referenceVideoUrls: mergedRefs.videoUrls,
               });
+              const resolvedStrategy = resolved.strategy;
+              const effectiveLastFrameUrl = resolvedStrategy === "first_last_frame"
+                ? lastFrameUrl
+                : null;
               const referenceRoles = inferReferenceRolesFromVisualRefs(
                 item.references.map((ref) => ({ role: ref.role })),
               );
@@ -760,7 +819,7 @@ export const videoMgrMcp: McpProvider = {
                   mode: resolvedStrategy,
                   prompt: runtimePrompt,
                   firstFrameUrl,
-                  lastFrameUrl,
+                  lastFrameUrl: effectiveLastFrameUrl,
                   referenceImageUrls: mergedImageUrls,
                   referenceVideoUrls: mergedRefs.videoUrls,
                 });
@@ -780,10 +839,12 @@ export const videoMgrMcp: McpProvider = {
                   prompt: item.prompt,
                   runtimePrompt,
                   strategy: resolvedStrategy,
+                  strategyReason: resolved.reason,
                   requestedStrategy: item.strategy ?? null,
                   sourceImageUrl: item.sourceImageUrl ?? null,
                   firstFrameUrl,
-                  lastFrameUrl,
+                  lastFrameUrl: effectiveLastFrameUrl,
+                  ignoredLastFrameUrl: resolved.ignoredLastFrame ? lastFrameUrl : null,
                   referenceImageUrls: mergedImageUrls,
                   referenceVideoUrls: mergedRefs.videoUrls,
                   references: item.references,
@@ -801,6 +862,8 @@ export const videoMgrMcp: McpProvider = {
                 sourceImageUrl: item.sourceImageUrl ?? null,
                 videoUrl: generatedVideoUrl,
                 pollCount,
+                strategy_reason: resolved.reason,
+                ignored_last_frame: resolved.ignoredLastFrame,
                 note: shouldGenerate
                   ? generatedVideoUrl
                     ? "Video generated and stored."

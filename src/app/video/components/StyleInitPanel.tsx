@@ -245,7 +245,7 @@ export function StyleInitPanel({
 
   const applyProfileToSequence = useCallback(async (profile: StyleProfile) => {
     if (!sequenceId || !sequenceKey) {
-      throw new Error("请先选择工作区");
+      throw new Error("请先选择序列");
     }
     await fetchJson(`/api/video/sequences/${encodeURIComponent(sequenceId)}/style-profile`, {
       method: "PATCH",
@@ -262,7 +262,7 @@ export function StyleInitPanel({
   const buildInjectInstruction = useCallback((profile: StyleProfile): string => {
     const tokenText = profile.styleTokens.join(", ");
     return [
-      `请将风格档案 \"${profile.name}\" 应用于当前工作区。`,
+      `请将风格档案 \"${profile.name}\" 应用于当前序列。`,
       `sequence_key=${sequenceKey ?? "unknown"}`,
       `style_profile_id=${profile.id}`,
       `style_tokens=${tokenText}`,

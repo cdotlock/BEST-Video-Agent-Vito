@@ -44,7 +44,7 @@ const DEFAULT_MCPS = ["video_mgr", "style_search", "video_memory", "mcp_manager"
 const MEMORY_USER_STORAGE_KEY = "agentForge.user";
 const PRO_CONFIG_STORAGE_KEY = "agentForge.video.proConfig";
 const DEFAULT_AUTO_SEQUENCE_KEY = "MAIN";
-const DEFAULT_AUTO_SEQUENCE_NAME = "主工作区";
+const DEFAULT_AUTO_SEQUENCE_NAME = "主序列";
 const DEFAULT_PRO_CONFIG: VideoProConfig = {
   customKnowledge: "",
   workflowTemplate: "",
@@ -184,7 +184,7 @@ export default function VideoWorkflowPage() {
     const refreshed = await data.refreshSequences();
     const created = refreshed.find((seq) => seq.sequenceKey === DEFAULT_AUTO_SEQUENCE_KEY) ?? refreshed[0];
     if (!created) {
-      void message.error("自动初始化工作区失败，请稍后重试。");
+      void message.error("自动初始化序列失败，请稍后重试。");
       return null;
     }
     data.selectSequence(created);
@@ -397,8 +397,8 @@ export default function VideoWorkflowPage() {
                 </Typography.Text>
                 <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
                   {data.selectedSequence
-                    ? `工作区：${formatWorkspaceLabel(data.selectedSequence.sequenceKey, data.selectedSequence.sequenceName)}`
-                    : "工作区未初始化"}
+                    ? `序列：${formatWorkspaceLabel(data.selectedSequence.sequenceKey, data.selectedSequence.sequenceName)}`
+                    : "序列未初始化"}
                 </Typography.Text>
                 <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
                   {executionMode === "yolo" ? "YOLO 自动推进偏好" : "Checkpoint 审慎推进偏好"}
@@ -409,7 +409,7 @@ export default function VideoWorkflowPage() {
               <Select
                 size="small"
                 value={data.selectedSequence?.id ?? undefined}
-                placeholder="选择工作区"
+                placeholder="选择序列"
                 options={data.sequences.map((seq) => ({
                   value: seq.id,
                   label: formatWorkspaceLabel(seq.sequenceKey, seq.sequenceName),

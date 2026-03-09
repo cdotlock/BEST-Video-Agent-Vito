@@ -155,6 +155,11 @@ interface SortableClipBlockProps {
   compact: boolean;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  onTrimMouseDown: (
+    clipId: string,
+    edge: "start" | "end",
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => void;
 }
 
 interface ClipFramePreviewProps {
@@ -582,11 +587,11 @@ function SortableClipBlock({
   compact,
   onSelect,
   onDelete,
+  onTrimMouseDown,
 }: SortableClipBlockProps) {
   const {
     attributes,
     listeners,
-    setActivatorNodeRef,
     setNodeRef,
     transform,
     transition,
@@ -603,11 +608,11 @@ function SortableClipBlock({
     <div
       ref={setNodeRef}
       style={style}
-      className={`rounded-[14px] border px-2 py-1.5 shadow-sm transition ${
+      className={`group relative rounded-[14px] border px-2 py-1.5 shadow-sm transition ${
         active
           ? "border-[var(--af-brand)] bg-[rgba(255,253,249,0.98)]"
           : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.9)]"
-      } ${playing ? "ring-2 ring-[rgba(76,139,106,0.35)]" : ""}`}
+      } ${playing ? "ring-2 ring-[rgba(76,139,106,0.35)]" : ""} cursor-grab active:cursor-grabbing`}
       onClick={() => onSelect(clip.id)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -615,9 +620,23 @@ function SortableClipBlock({
           onSelect(clip.id);
         }
       }}
-      role="button"
-      tabIndex={0}
+      {...attributes}
+      {...listeners}
     >
+      <button
+        type="button"
+        aria-label={`${clip.title} 左侧裁切手柄`}
+        className="absolute inset-y-1 left-0 z-10 w-2 rounded-l-[14px] bg-[rgba(47,107,95,0.12)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+        onMouseDown={(event) => onTrimMouseDown(clip.id, "start", event)}
+        onClick={(event) => event.stopPropagation()}
+      />
+      <button
+        type="button"
+        aria-label={`${clip.title} 右侧裁切手柄`}
+        className="absolute inset-y-1 right-0 z-10 w-2 rounded-r-[14px] bg-[rgba(47,107,95,0.12)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+        onMouseDown={(event) => onTrimMouseDown(clip.id, "end", event)}
+        onClick={(event) => event.stopPropagation()}
+      />
       <div className="mb-2">
         <ClipFramePreview
           url={clip.url}
@@ -639,16 +658,9 @@ function SortableClipBlock({
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            ref={setActivatorNodeRef}
-            type="button"
-            className="cursor-grab rounded-full border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.9)] px-2 py-1 text-[10px] text-[var(--af-muted)] active:cursor-grabbing"
-            onClick={(event) => event.stopPropagation()}
-            {...attributes}
-            {...listeners}
-          >
-            拖拽
-          </button>
+          <span className="rounded-full border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.9)] px-2 py-1 text-[10px] text-[var(--af-muted)]">
+            拖动排序
+          </span>
           <Button
             size="small"
             type="text"
@@ -694,6 +706,8 @@ export function ClipComposer({
   const [programPlaybackIndex, setProgramPlaybackIndex] = useState<number | null>(null);
   const [timelinePlayheadSec, setTimelinePlayheadSec] = useState(0);
   const [isTimelineDragOver, setIsTimelineDragOver] = useState(false);
+  const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
+  const [fitTimelineToView, setFitTimelineToView] = useState(true);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -1123,7 +1137,7 @@ export function ClipComposer({
   const persistPlan = useCallback(async (saveMode: "manual" | "autosave") => {
     if (!sequenceId) {
       if (saveMode === "manual") {
-        void message.warning("请先创建或选择工作区。");
+        void message.warning("请先创建或选择序列。");
       }
       return false;
     }
@@ -1576,6 +1590,101 @@ export function ClipComposer({
     }));
   }, [commitDocument, selectedClip]);
 
+  const handleTrimMouseDown = useCallback((
+    clipId: string,
+    edge: "start" | "end",
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isProgramPlaying) {
+      stopProgramPlayback();
+    }
+
+    const baseClip = currentDocument.clips.find((clip) => clip.id === clipId);
+    if (!baseClip) return;
+
+    selectClip(clipId);
+
+    const initialClientX = event.clientX;
+    const initialInSec = baseClip.inSec;
+    const initialOutSec = baseClip.outSec;
+    const sourceDurationSec = baseClip.sourceDurationSec ?? Number.MAX_SAFE_INTEGER;
+    const minDuration = Math.max(
+      0.12,
+      currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.12,
+    );
+    const pixelsPerSecond = fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0
+      ? Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1))
+      : Math.max(12, currentDocument.timelineZoom * 1.05);
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const deltaSec = (moveEvent.clientX - initialClientX) / Math.max(pixelsPerSecond, 0.001);
+      commitDocument((current) => ({
+        ...current,
+        clips: current.clips.map((clip) => {
+          if (clip.id !== clipId) return clip;
+          if (edge === "start") {
+            const nextInSec = clamp(
+              quantize(initialInSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+              0,
+              Math.min(initialOutSec - minDuration, sourceDurationSec),
+            );
+            return {
+              ...clip,
+              inSec: nextInSec,
+            };
+          }
+          const nextOutSec = clamp(
+            quantize(initialOutSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+            initialInSec + minDuration,
+            sourceDurationSec,
+          );
+          return {
+            ...clip,
+            outSec: nextOutSec,
+          };
+        }),
+        selectedClipId: clipId,
+        previewMode: "program",
+      }), { recordHistory: false });
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setEditor((prev) => {
+        const currentSerialized = serializeDocument(prev.present);
+        const historySerialized = serializeDocument(prev.history[prev.historyIndex] ?? prev.present);
+        if (currentSerialized === historySerialized) {
+          return prev;
+        }
+        const historyHead = prev.history.slice(0, prev.historyIndex + 1);
+        const nextHistory = [...historyHead, cloneDocument(prev.present)].slice(-MAX_HISTORY);
+        return {
+          ...prev,
+          history: nextHistory,
+          historyIndex: nextHistory.length - 1,
+        };
+      });
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [
+    commitDocument,
+    currentDocument.clips,
+    currentDocument.snapEnabled,
+    currentDocument.snapStepSec,
+    currentDocument.timelineZoom,
+    fitTimelineToView,
+    isProgramPlaying,
+    selectClip,
+    stopProgramPlayback,
+    timelineViewportWidth,
+    totalDuration,
+  ]);
+
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -1667,14 +1776,40 @@ export function ClipComposer({
     return "未开始";
   }, [autosaveState, lastSavedAt]);
 
+  useEffect(() => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+
+    const updateWidth = () => {
+      setTimelineViewportWidth(viewport.clientWidth);
+    };
+
+    updateWidth();
+
+    const observer = new ResizeObserver(() => {
+      updateWidth();
+    });
+    observer.observe(viewport);
+
+    return () => observer.disconnect();
+  }, []);
+
   const timelinePixelsPerSecond = useMemo(
-    () => Math.max(12, currentDocument.timelineZoom * 1.05),
-    [currentDocument.timelineZoom],
+    () => {
+      if (fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0) {
+        return Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1));
+      }
+      return Math.max(12, currentDocument.timelineZoom * 1.05);
+    },
+    [currentDocument.timelineZoom, fitTimelineToView, timelineViewportWidth, totalDuration],
   );
 
   const timelineTrackWidth = useMemo(
-    () => Math.max(540, totalDuration * timelinePixelsPerSecond),
-    [timelinePixelsPerSecond, totalDuration],
+    () => Math.max(
+      Math.max(540, timelineViewportWidth > 0 ? timelineViewportWidth - 8 : 0),
+      totalDuration * timelinePixelsPerSecond,
+    ),
+    [timelinePixelsPerSecond, timelineViewportWidth, totalDuration],
   );
 
   const seekPlayhead = useCallback((nextSec: number) => {
@@ -1956,7 +2091,7 @@ export function ClipComposer({
                 Timeline
               </Typography.Text>
               <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                拖入视频即可拼接，时间尺支持 click/drag scrub。
+                拖入视频即可拼接，整块片段可拖动排序，边缘可直接裁切。
               </Typography.Text>
             </div>
             <div className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] px-2.5 py-1.5">
@@ -1997,6 +2132,12 @@ export function ClipComposer({
               </div>
 
               <Space size={12} wrap>
+                <span className="text-[11px] text-[var(--af-muted)]">全局适配</span>
+                <Switch
+                  size="small"
+                  checked={fitTimelineToView}
+                  onChange={setFitTimelineToView}
+                />
                 <span className="text-[11px] text-[var(--af-muted)]">吸附</span>
                 <Switch
                   size="small"
@@ -2033,6 +2174,7 @@ export function ClipComposer({
                   min={8}
                   max={120}
                   value={currentDocument.timelineZoom}
+                  disabled={fitTimelineToView}
                   onChange={(value) => {
                     if (typeof value !== "number") return;
                     commitDocument((current) => ({
@@ -2111,6 +2253,7 @@ export function ClipComposer({
                               : playheadSegment?.index === segment.index}
                               onSelect={selectClip}
                               onDelete={removeClip}
+                              onTrimMouseDown={handleTrimMouseDown}
                             />
                           );
                         })}

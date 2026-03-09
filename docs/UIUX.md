@@ -86,7 +86,7 @@
 
 1. 顶栏
    - Breadcrumb
-   - 项目名 / Workspace capsule
+   - 项目名 / Sequence capsule
    - `Checkpoint / YOLO`
    - `Chat / Clip`
 2. 中间主舞台
@@ -118,16 +118,15 @@
 
 `灵动岛（Dynamic Island）` 约定：
 
-1. 它是运行态监控与导演编排区，不替代素材图谱；`Pro` 叠层也收入这里的展开态
-2. 默认应压缩为单条状态岛，只保留当前最重要状态、提示和进度，不得遮挡主工作区
+1. 它是轻量导演台，不替代素材图谱；`Pro` 叠层也收入这里的展开态
+2. 默认应压缩为单条状态岛，只保留当前阶段、最关键阻塞与下一动作，不得遮挡主舞台
 3. 点击后以带动画的浮层展开，而不是覆盖式大板块
 4. 展开后同时展示：
-   - Agent 当前运行态
-   - 当前路径主轴与 next cue
+   - 当前阶段与进度
+   - 当前 cue
    - 当前还缺什么素材/语义锚点
-   - 可直接触发的高价值导演动作
-   - 当前阶段进度与最近一次关键推进
-   - `Pro / Atelier / Memory / Capabilities` 等专业叠层
+   - 下一步最值得做的动作
+   - `Pro / Memory / Capabilities` 等专业叠层
 
 ## 4.2 消息类型
 
@@ -246,16 +245,17 @@ Inspector 至少包含：
 
 1. `@加入上下文`
 2. `设为风格参考`
-3. `作为首帧`
-4. `作为尾帧`
-5. `加入粗剪`
+3. `用于当前镜头起始帧`
+4. `用于当前镜头结束帧`
+5. `加入时间线`
 6. `重 roll`
 
 当前实现约定：
 
-1. Asset Atlas 已支持 `设为首帧 / 设为尾帧 / 角色锚点 / 空镜锚点 / 加入粗剪`
-2. 语义动作不是一次性聊天指令，而是通过 `PATCH /resources` 写回 `semanticRole`
-3. `加入粗剪` 会直接切换到 Clip Studio，并把目标视频插入时间线待保存
+1. Asset Atlas 已支持 `用于当前镜头起始帧 / 用于当前镜头结束帧 / 角色锚点 / 空镜锚点 / 加入时间线`
+2. 起始帧/结束帧动作优先走上下文化注入，让用户始终知道它服务的是“当前镜头”而不是某个看不见的 slot
+3. 角色锚点/空镜锚点这类长期语义仍通过 `PATCH /resources` 写回 `semanticRole`
+4. `加入时间线` 会直接切换到 Clip Studio，并把目标视频插入时间线待保存
 
 ## 6. Style 与 Pro
 
@@ -286,21 +286,19 @@ Pro 是高级配置面板，但不暴露源码编辑。
 
 1. `Knowledge`
    - 用户知识补充、长期禁忌、偏好
-2. `Templates`
+2. `Workflow`
    - workflow 模板与默认策略
-3. `Atelier`
+3. `Strategy`
    - 将分镜密度、参考路线、角色/空镜/对白/粗剪策略显式编排成导演蓝图
 4. `Memory`
    - memory user、记忆清理、近期提炼结果
-5. `Review`
-   - checkpoint 强度、自评审开关、默认确认策略
-6. `Capabilities`
+5. `Capabilities`
    - 可用 MCP/Skill 叠层与建议，不直接暴露源码
 
 当前实现约定：
 
-1. `Pro` 已按 `Knowledge / Templates / Atelier / Memory / Review / Capabilities` 六层内嵌叠层落地
-2. `Atelier` 以显式导演杠杆组织 workflow，而不是逼用户手写整段 prompt
+1. `Pro` 已按 `Knowledge / Workflow / Strategy / Memory / Capabilities` 五层内嵌叠层落地
+2. `Strategy` 以显式导演杠杆组织 workflow，并把 review gate 直接收口到同层，而不是逼用户手写整段 prompt
 3. `Memory` tab 直接展示长期偏好摘要、路径推荐、剪辑偏好、镜头语言偏好与模型偏好
 4. `Capabilities` tab 仅展示绑定的 MCP / Skill / Prompt Compiler layer
 
@@ -337,10 +335,10 @@ Clip 不应再是“表单式片段列表”，而要成为专业粗剪台。
 2. 中央主舞台采用接近剪映 / iMovie 的工作台模式：左侧小 Inspector + 右侧中上 Preview + 右侧下方 Timeline，三者位置关系固定，不因宽比换位
 3. 自动保存通过 `clip-plan timeline_v2 + editorState` 持久化
 4. 若服务器已有 clip plan，则优先恢复；否则回退到本地草稿或现有视频候选起稿
-5. 进入剪辑时，现有视频候选应默认按顺序进入时间线起稿；`加入粗剪` 的资产动作仍可继续把单条视频送入当前时间线，形成 Asset Atlas -> Clip Studio 的闭环
+5. 进入剪辑时，现有视频候选应默认按顺序进入时间线起稿；`加入时间线` 的资产动作仍可继续把单条视频送入当前时间线，形成 Asset Atlas -> Clip Studio 的闭环
 6. 时间尺必须支持 click / drag scrub，并驱动 playhead、当前片段与 Preview Monitor 联动
 7. 手动保存后会主动写回路径评审与编辑偏好，作为后续路径推荐和上下文组装输入
-8. 时间线首期已提供 `播放头切割（Split）` 与 `波纹删除（Ripple Delete）` 的显式动作，避免“假轨道”观感
+8. 时间线首期已提供 `播放头切割（Split）` 与 `波纹删除（Ripple Delete）` 的显式动作，并支持整块拖动排序、边缘直接裁切与全局适配视图
 9. 提供 `AI 自动粗剪` 一键能力：按现有视频候选自动生成粗剪序列并应用基础转场预设（Cut / Fade / Dissolve / Wipe Left / Fade Black）
 
 ## 7.4 对白脚本确认层
@@ -362,9 +360,9 @@ Clip 不应再是“表单式片段列表”，而要成为专业粗剪台。
 ## 8.1 空态
 
 1. 无项目：强调创建第一部作品
-2. 无工作域：强调“一句话开始”
+2. 无序列：强调“一句话开始”
 3. 无素材：强调“Agent 会先规划再生成”
-4. 无粗剪：强调“把视频加入粗剪开始拼接”
+4. 无粗剪：强调“把视频加入时间线开始拼接”
 
 ## 8.2 加载态
 

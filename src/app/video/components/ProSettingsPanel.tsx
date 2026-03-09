@@ -61,13 +61,13 @@ const TEMPLATE_PRESETS: TemplatePreset[] = [
     id: "storyboard_grid_first",
     title: "分镜优先",
     summary: "先四宫格/九宫格探索，再生成视频，最后多候选粗剪。",
-    content: "先用四宫格或九宫格分镜探索镜头密度，再补角色立绘与空镜，随后优先首尾帧视频和 mixed refs，多候选收敛后进入粗剪。",
+    content: "先用四宫格或九宫格分镜探索镜头密度，再补角色立绘与空镜，随后优先首帧视频验证动作，只有在结尾落点明确时才切到首尾帧，多候选收敛后进入粗剪。",
   },
   {
     id: "first_last_frame",
-    title: "首尾帧优先",
-    summary: "适合镜头清楚、运动明确的短片段。",
-    content: "当镜头运动方向和起止状态明确时，优先走 first_last_frame；若镜头不稳定，先补 storyboard_ref 或 motion_ref 再生成。",
+    title: "起止落点明确",
+    summary: "只有当首尾状态都清楚时，才进入首尾帧约束。",
+    content: "当镜头运动方向和起止状态都明确时，再显式走 first_last_frame；若只是想稳定起始构图，优先 first_frame；若镜头不稳定，先补 storyboard_ref 或 motion_ref。",
   },
   {
     id: "dialogue_driven",
@@ -143,7 +143,7 @@ function buildAtelierBlueprintFromConfig(input: VideoProConfig): AtelierBlueprin
 }
 
 function buildAtelierWorkflowText(input: AtelierBlueprintState): string {
-  const lines = ["按 Director Atelier 路线执行："];
+  const lines = ["按 Director Strategy 路线执行："];
 
   if (input.storyboardDensity === "grid_3x3") {
     lines.push("先做九宫格分镜探索，扩大镜头候选范围后再收敛。");
@@ -160,7 +160,7 @@ function buildAtelierWorkflowText(input: AtelierBlueprintState): string {
   } else if (input.referenceRoute === "mixed_refs") {
     lines.push("当图像与视频素材并存时，优先走 mixed refs 路线。");
   } else {
-    lines.push("根据素材质量动态选择首帧、首尾帧或 mixed refs，不要死锁单一路径。");
+    lines.push("默认优先首帧；只有当结尾落点也明确时才切到首尾帧；若图像与视频参考并存，再考虑 mixed refs。");
   }
 
   if (input.characterPriority) {
@@ -377,7 +377,7 @@ export function ProSettingsPanel({
       checkpointAlignmentRequired: atelier.checkpointAlignmentRequired,
       enableSelfReview: atelier.enableSelfReview,
     }));
-    void message.success(mode === "replace" ? "Atelier 路线已写入模板" : "Atelier 路线已叠加到模板");
+    void message.success(mode === "replace" ? "策略蓝图已写入模板" : "策略蓝图已叠加到模板");
   };
 
   const applyAtelierKnowledge = () => {
@@ -388,7 +388,7 @@ export function ProSettingsPanel({
       checkpointAlignmentRequired: atelier.checkpointAlignmentRequired,
       enableSelfReview: atelier.enableSelfReview,
     }));
-    void message.success("Atelier 知识已叠加到长期知识层");
+    void message.success("策略偏好已叠加到长期知识层");
   };
 
   const applyRecommendedPathSnippet = (pathId: string) => {
@@ -438,7 +438,7 @@ export function ProSettingsPanel({
         },
         {
           key: "templates",
-          label: "Templates",
+          label: "Workflow",
           children: (
             <div className="space-y-3">
               <Card size="small" className="!rounded-[18px]">
@@ -448,7 +448,7 @@ export function ProSettingsPanel({
                   autoSize={{ minRows: 8, maxRows: 16 }}
                   value={draftConfig.workflowTemplate}
                   onChange={(event) => setDraftConfig((prev) => ({ ...prev, workflowTemplate: event.target.value }))}
-                  placeholder="例如：先四宫格分镜，再角色立绘，再首尾帧视频，多候选后粗剪。"
+                  placeholder="例如：先四宫格分镜，再角色立绘，再首帧视频验证动作，稳定后进入多候选粗剪。"
                 />
               </Card>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -469,13 +469,13 @@ export function ProSettingsPanel({
         },
         {
           key: "atelier",
-          label: "Atelier",
+          label: "Strategy",
           children: (
             <div className="space-y-3">
               <Alert
                 showIcon
                 type="success"
-                title="Atelier 不是另一个大 prompt，而是把路径编排拆成几个可控的导演杠杆。"
+                title="这里收口默认路线、参考策略和 review gate。少切 tab，先把当前序列的导演策略定清楚。"
               />
               <Card size="small" className="!rounded-[18px]">
                 <Typography.Text strong>Storyboard Density</Typography.Text>
@@ -502,7 +502,7 @@ export function ProSettingsPanel({
                   options={[
                     { value: "auto", label: "自动决策" },
                     { value: "first_frame", label: "首帧图生视频" },
-                    { value: "first_last_frame", label: "首尾帧约束" },
+                    { value: "first_last_frame", label: "首尾帧（起止都明确）" },
                     { value: "mixed_refs", label: "mixed refs" },
                   ]}
                 />
@@ -567,7 +567,7 @@ export function ProSettingsPanel({
 
               <Card size="small" className="!rounded-[18px]">
                 <div className="flex items-center justify-between gap-3">
-                  <Typography.Text strong>Blueprint Preview</Typography.Text>
+                  <Typography.Text strong>Strategy Preview</Typography.Text>
                   <Space>
                     <Button size="small" onClick={() => applyAtelierTemplate("append")}>
                       叠加到模板
@@ -614,6 +614,38 @@ export function ProSettingsPanel({
                   </div>
                 )}
               </Card>
+              <Card size="small" className="!rounded-[18px]">
+                <Typography.Text strong>Review Gate</Typography.Text>
+                <Typography.Paragraph style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: "var(--af-muted)" }}>
+                  这里控制的是是否在关键节点停下来检查，而不是给 Agent 额外增加表单负担。
+                </Typography.Paragraph>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Typography.Text strong>Checkpoint 首轮对齐</Typography.Text>
+                      <div className="mt-1 text-[12px] text-[var(--af-muted)]">
+                        先确认画风、工作流、分镜密度和最终交付目标，再正式执行。
+                      </div>
+                    </div>
+                    <Switch
+                      checked={draftConfig.checkpointAlignmentRequired}
+                      onChange={(checked) => setDraftConfig((prev) => ({ ...prev, checkpointAlignmentRequired: checked }))}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <Typography.Text strong>阶段性自评审</Typography.Text>
+                      <div className="mt-1 text-[12px] text-[var(--af-muted)]">
+                        关键阶段后让 Agent 自查是否要换路径、补素材、补台词或提高分镜密度。
+                      </div>
+                    </div>
+                    <Switch
+                      checked={draftConfig.enableSelfReview}
+                      onChange={(checked) => setDraftConfig((prev) => ({ ...prev, enableSelfReview: checked }))}
+                    />
+                  </div>
+                </div>
+              </Card>
             </div>
           ),
         },
@@ -639,7 +671,6 @@ export function ProSettingsPanel({
                   </Typography.Text>
                 </div>
               </Card>
-
               <Card size="small" className="!rounded-[18px]">
                 <Typography.Text strong>偏好摘要</Typography.Text>
                 {isLoadingMemory ? (
@@ -707,7 +738,6 @@ export function ProSettingsPanel({
                   </div>
                 )}
               </Card>
-
               <Card size="small" className="!rounded-[18px]">
                 <Typography.Text strong>路径推荐</Typography.Text>
                 {isLoadingPaths ? (
@@ -730,47 +760,6 @@ export function ProSettingsPanel({
                   </div>
                 )}
               </Card>
-            </div>
-          ),
-        },
-        {
-          key: "review",
-          label: "Review",
-          children: (
-            <div className="space-y-3">
-              <Card size="small" className="!rounded-[18px]">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <Typography.Text strong>Checkpoint 首轮对齐</Typography.Text>
-                    <div className="mt-1 text-[12px] text-[var(--af-muted)]">
-                      先确认画风、工作流、分镜密度和最终交付目标，再正式执行。
-                    </div>
-                  </div>
-                  <Switch
-                    checked={draftConfig.checkpointAlignmentRequired}
-                    onChange={(checked) => setDraftConfig((prev) => ({ ...prev, checkpointAlignmentRequired: checked }))}
-                  />
-                </div>
-              </Card>
-              <Card size="small" className="!rounded-[18px]">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <Typography.Text strong>阶段性自评审</Typography.Text>
-                    <div className="mt-1 text-[12px] text-[var(--af-muted)]">
-                      关键阶段后让 Agent 自查是否要换路径、补素材、补台词或提高分镜密度。
-                    </div>
-                  </div>
-                  <Switch
-                    checked={draftConfig.enableSelfReview}
-                    onChange={(checked) => setDraftConfig((prev) => ({ ...prev, enableSelfReview: checked }))}
-                  />
-                </div>
-              </Card>
-              <Alert
-                showIcon
-                type="warning"
-                title="Review 不是让 Agent 更慢，而是让它在关键节点更少返工。"
-              />
             </div>
           ),
         },
@@ -838,10 +827,10 @@ export function ProSettingsPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <Typography.Text strong style={{ fontSize: 15, color: "var(--af-text)" }}>
-            Pro Atelier
+            Director Pro
           </Typography.Text>
           <div className="mt-1 text-[12px] text-[var(--af-muted)]">
-            这里维护知识、模板、Atelier、记忆与能力叠层。
+            这里维护导演策略、长期知识、记忆与能力叠层。
           </div>
         </div>
         <Space>{actionBar}</Space>
