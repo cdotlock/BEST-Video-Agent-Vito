@@ -978,6 +978,7 @@ export function ClipComposer({
   const { message } = App.useApp();
   const programVideoRef = useRef<HTMLVideoElement | null>(null);
   const programTransitionVideoRef = useRef<HTMLVideoElement | null>(null);
+  const programPreloadVideoRef = useRef<HTMLVideoElement | null>(null);
   const audioPreviewRefs = useRef(new Map<string, HTMLAudioElement>());
   const timelineViewportRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1004,11 +1005,10 @@ export function ClipComposer({
   const [isProgramPlaying, setIsProgramPlaying] = useState(false);
   const [programPlaybackIndex, setProgramPlaybackIndex] = useState<number | null>(null);
   const [timelinePlayheadSec, setTimelinePlayheadSec] = useState(0);
-  const [isTimelineDragOver, setIsTimelineDragOver] = useState(false);
+  const [timelineDropTarget, setTimelineDropTarget] = useState<"video" | "audio" | null>(null);
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
   const [fitTimelineToView, setFitTimelineToView] = useState(false);
-  const [pendingAudioUrl, setPendingAudioUrl] = useState("");
-  const [pendingAudioTitle, setPendingAudioTitle] = useState("");
+  const [selectedAudioTrackId, setSelectedAudioTrackId] = useState<string | null>(null);
   const [activePreviewTransition, setActivePreviewTransition] = useState<ActivePreviewTransition | null>(null);
 
   const sensors = useSensors(
@@ -1336,9 +1336,15 @@ export function ClipComposer({
         })
         .finally(() => {
           pendingAudioProbeUrlsRef.current.delete(url);
-        });
+      });
     }
   }, [commitDocument, currentDocument.audioTracks, editor.bootstrapped]);
+
+  useEffect(() => {
+    if (!selectedAudioTrackId) return;
+    if (currentDocument.audioTracks.some((track) => track.id === selectedAudioTrackId)) return;
+    setSelectedAudioTrackId(null);
+  }, [currentDocument.audioTracks, selectedAudioTrackId]);
 
   useEffect(() => {
     if (!editor.bootstrapped || !queuedClipResource) return;
@@ -1408,6 +1414,10 @@ export function ClipComposer({
   const selectedClipIndex = useMemo(
     () => currentDocument.clips.findIndex((clip) => clip.id === currentDocument.selectedClipId),
     [currentDocument.clips, currentDocument.selectedClipId],
+  );
+  const selectedAudioTrack = useMemo(
+    () => currentDocument.audioTracks.find((track) => track.id === selectedAudioTrackId) ?? null,
+    [currentDocument.audioTracks, selectedAudioTrackId],
   );
 
   const timelineSegments = useMemo(
@@ -1840,7 +1850,10 @@ export function ClipComposer({
       const segment = timelineSegments[programPlaybackIndex];
       if (!clip || !segment) return;
       const offset = clamp(video.currentTime - clip.inSec, 0, clipDurationSec(clip));
-      setTimelinePlayheadSec(clamp(segment.startSec + offset, segment.startSec, segment.endSec));
+      const nextPlayheadSec = clamp(segment.startSec + offset, segment.startSec, segment.endSec);
+      setTimelinePlayheadSec((current) => (
+        Math.abs(current - nextPlayheadSec) <= 0.04 ? current : nextPlayheadSec
+      ));
       const nextClip = currentDocument.clips[programPlaybackIndex + 1] ?? null;
       if (nextClip) {
         const transitionDuration = Math.min(
@@ -1958,6 +1971,24 @@ export function ClipComposer({
       transitionVideo.removeEventListener("loadedmetadata", syncFrame);
     };
   }, [currentDocument.clips, previewTransitionState]);
+
+  useEffect(() => {
+    const preloadVideo = programPreloadVideoRef.current;
+    if (!preloadVideo) return;
+    const nextIndex = isProgramPlaying
+      ? ((programPlaybackIndex ?? -1) + 1)
+      : ((playheadSegment?.index ?? -1) + 1);
+    const nextClip = currentDocument.clips[nextIndex] ?? null;
+    if (!nextClip?.url) {
+      preloadVideo.pause();
+      preloadVideo.removeAttribute("src");
+      preloadVideo.load();
+      return;
+    }
+    if (preloadVideo.getAttribute("src") === nextClip.url) return;
+    preloadVideo.src = nextClip.url;
+    preloadVideo.load();
+  }, [currentDocument.clips, isProgramPlaying, playheadSegment?.index, programPlaybackIndex]);
 
   useEffect(() => {
     const entries = [...audioPreviewRefs.current.entries()];
@@ -2266,29 +2297,24 @@ export function ClipComposer({
     }));
   }, [commitDocument]);
 
-  const handleAddAudioTrack = useCallback(() => {
-    const url = pendingAudioUrl.trim();
-    if (url.length === 0) {
-      void message.warning("请先输入音频 URL。");
-      return;
-    }
-
-    try {
-      new URL(url);
-    } catch {
-      void message.warning("请输入有效的音频 URL。");
-      return;
-    }
-
-    const defaultTitle = pendingAudioTitle.trim() || deriveTrackTitleFromUrl(url, currentDocument.audioTracks.length);
+  const appendAudioTrackFromPayload = useCallback((
+    payload: {
+      id: string;
+      title: string;
+      url: string;
+    },
+    startSec: number,
+  ) => {
+    const cachedDurationSec = mediaDurationCacheRef.current.get(payload.url) ?? null;
+    const defaultDurationSec = cachedDurationSec ?? Math.max(8, Math.min(20, totalDuration || 12));
     const nextTrack: AudioTrackDraft = {
       id: crypto.randomUUID(),
-      title: defaultTitle,
-      url,
-      startSec: clamp(timelinePlayheadSec, 0, totalDuration),
+      title: payload.title,
+      url: payload.url,
+      startSec: clamp(startSec, 0, Number.MAX_SAFE_INTEGER),
       sourceInSec: 0,
-      sourceOutSec: 12,
-      sourceDurationSec: null,
+      sourceOutSec: Number(clamp(defaultDurationSec, 1, Number.MAX_SAFE_INTEGER).toFixed(3)),
+      sourceDurationSec: cachedDurationSec,
       volume: 100,
       muted: false,
     };
@@ -2296,10 +2322,9 @@ export function ClipComposer({
       ...current,
       audioTracks: [...current.audioTracks, nextTrack],
     }));
-    setPendingAudioUrl("");
-    setPendingAudioTitle("");
-    void message.success(`已加入音频轨：${defaultTitle}`, 0.8);
-  }, [commitDocument, currentDocument.audioTracks.length, message, pendingAudioTitle, pendingAudioUrl, timelinePlayheadSec, totalDuration]);
+    setSelectedAudioTrackId(nextTrack.id);
+    void message.success(`已加入音频轨：${payload.title}`, 0.8);
+  }, [commitDocument, message, totalDuration]);
 
   const handleAudioTrackMoveMouseDown = useCallback((
     trackId: string,
@@ -2891,12 +2916,12 @@ export function ClipComposer({
     if (!types.includes(CLIP_ATLAS_DRAG_MIME)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    setIsTimelineDragOver(true);
+    setTimelineDropTarget("video");
   }, []);
 
   const handleTimelineDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    setIsTimelineDragOver(false);
+    setTimelineDropTarget(null);
     const raw = event.dataTransfer.getData(CLIP_ATLAS_DRAG_MIME);
     const payload = parseClipAtlasDragPayload(raw);
     if (!payload) {
@@ -2937,7 +2962,37 @@ export function ClipComposer({
   }, [commitDocument, currentDocument.clips, message, timelinePlayheadSec, timelineSegments]);
 
   const handleTimelineDragLeave = useCallback(() => {
-    setIsTimelineDragOver(false);
+    setTimelineDropTarget((current) => (current === "video" ? null : current));
+  }, []);
+
+  const handleAudioTrackDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    const types = Array.from(event.dataTransfer.types);
+    if (!types.includes(CLIP_ATLAS_DRAG_MIME)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    setTimelineDropTarget("audio");
+  }, []);
+
+  const handleAudioTrackDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setTimelineDropTarget(null);
+    const raw = event.dataTransfer.getData(CLIP_ATLAS_DRAG_MIME);
+    const payload = parseClipAtlasDragPayload(raw);
+    if (!payload) {
+      void message.warning("仅支持从右侧素材栏拖入已生成视频。");
+      return;
+    }
+    const viewport = timelineViewportRef.current;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const localX = event.clientX - bounds.left + (viewport?.scrollLeft ?? 0);
+    const startSec = clamp(localX / timelinePixelsPerSecond, 0, Number.MAX_SAFE_INTEGER);
+    appendAudioTrackFromPayload(payload, startSec);
+  }, [appendAudioTrackFromPayload, message, timelinePixelsPerSecond]);
+
+  const handleAudioTrackDragLeave = useCallback(() => {
+    setTimelineDropTarget((current) => (current === "audio" ? null : current));
   }, []);
 
   useEffect(() => {
@@ -2975,10 +3030,10 @@ export function ClipComposer({
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <Typography.Text strong style={{ fontSize: 13 }}>
-            Clip Studio
+            剪辑台
           </Typography.Text>
           <div className="mt-1 text-[11px] text-[var(--af-muted)]">
-            左侧 Inspector 常驻展开 · 右侧真实转场 Preview（上）+ Timeline（下）
+            左侧只保留片段 Inspector，音频直接拖入下方时间轴
           </div>
         </div>
         <Space size={8}>
@@ -3001,7 +3056,7 @@ export function ClipComposer({
         className="mb-4"
         showIcon
         type="info"
-        title="从右侧素材栏拖入视频到时间线；拖动时间尺可 scrub 并联动 Preview。转场在预览中真实生效，音频轨会跟随时间线同步。"
+        title="拖视频到主时间线可加片段，拖到下方音频带可只取声音。拖动时间尺会联动 Preview，转场和节目总长都按真实结果显示。"
       />
 
       <div className="overflow-x-auto pb-1">
@@ -3019,7 +3074,7 @@ export function ClipComposer({
                   Inspector
                 </Typography.Text>
                 <div className="mt-0.5 text-[11px] text-[var(--af-muted)]">
-                  默认展开；同时维护片段参数和简单音频轨。
+                  默认展开；这里只保留当前片段的精修参数。
                 </div>
               </div>
 
@@ -3128,103 +3183,8 @@ export function ClipComposer({
                 </>
               )}
 
-              <div className="rounded-[18px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.76)] p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <Typography.Text strong>音频轨</Typography.Text>
-                  <Tag style={{ margin: 0 }}>{currentDocument.audioTracks.length}</Tag>
-                </div>
-                <div className="mt-1 text-[11px] text-[var(--af-muted)]">
-                  支持简单 BGM 轨：起点、截取区间、静音和音量。
-                </div>
-
-                <div className="mt-3 space-y-2">
-                  <Input
-                    value={pendingAudioUrl}
-                    onChange={(event) => setPendingAudioUrl(event.target.value)}
-                    placeholder="输入可访问的音频 URL"
-                  />
-                  <Input
-                    value={pendingAudioTitle}
-                    onChange={(event) => setPendingAudioTitle(event.target.value)}
-                    placeholder="音频标题（可选）"
-                  />
-                  <Button size="small" onClick={handleAddAudioTrack}>
-                    添加音频轨
-                  </Button>
-                </div>
-
-                <div className="mt-3 space-y-3">
-                  {currentDocument.audioTracks.length === 0 ? (
-                    <div className="rounded-[14px] border border-dashed border-[rgba(229,221,210,0.9)] px-3 py-3 text-[12px] text-[var(--af-muted)]">
-                      还没有音频轨。可直接粘贴音乐或旁白的 URL。
-                    </div>
-                  ) : currentDocument.audioTracks.map((track) => (
-                    <div
-                      key={track.id}
-                      className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-white/70 p-3"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <Input
-                          size="small"
-                          value={track.title}
-                          onChange={(event) => updateAudioTrack(track.id, { title: event.target.value })}
-                        />
-                        <Button
-                          size="small"
-                          type="text"
-                          danger
-                          icon={<DeleteOutlined />}
-                          onClick={() => removeAudioTrack(track.id)}
-                        />
-                      </div>
-                      <div className="mt-2 grid grid-cols-2 gap-2">
-                        <InputNumber
-                          size="small"
-                          min={0}
-                          value={track.startSec}
-                          onChange={(value) => updateAudioTrack(track.id, { startSec: Number(value ?? 0) })}
-                          style={{ width: "100%" }}
-                          addonBefore="起点"
-                        />
-                        <InputNumber
-                          size="small"
-                          min={0}
-                          max={200}
-                          value={track.volume}
-                          onChange={(value) => updateAudioTrack(track.id, { volume: Number(value ?? 100) })}
-                          style={{ width: "100%" }}
-                          addonAfter="%"
-                        />
-                        <InputNumber
-                          size="small"
-                          min={0}
-                          value={track.sourceInSec}
-                          onChange={(value) => updateAudioTrack(track.id, { sourceInSec: Number(value ?? 0) })}
-                          style={{ width: "100%" }}
-                          addonBefore="In"
-                        />
-                        <InputNumber
-                          size="small"
-                          min={track.sourceInSec}
-                          value={track.sourceOutSec}
-                          onChange={(value) => updateAudioTrack(track.id, { sourceOutSec: Number(value ?? track.sourceInSec) })}
-                          style={{ width: "100%" }}
-                          addonBefore="Out"
-                        />
-                      </div>
-                      <div className="mt-2 flex items-center justify-between gap-3">
-                        <div className="text-[11px] text-[var(--af-muted)]">
-                          源长 {track.sourceDurationSec ? `${track.sourceDurationSec.toFixed(2)}s` : "读取中"}
-                        </div>
-                        <Switch
-                          size="small"
-                          checked={!track.muted}
-                          onChange={(checked) => updateAudioTrack(track.id, { muted: !checked })}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
+              <div className="rounded-[18px] border border-dashed border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.56)] px-4 py-3 text-[12px] text-[var(--af-muted)]">
+                音频不在左侧维护。把右侧视频素材直接拖到时间轴下方的音频带，就会只取声音并创建音频轨。
               </div>
             </div>
           </Card>
@@ -3232,7 +3192,7 @@ export function ClipComposer({
         <div className="flex min-h-0 flex-col gap-2">
           <Card
             className="ceramic-panel !border-transparent"
-            title="Preview"
+            title="导演台"
             extra={(
               <Space size={8}>
                 {isProgramPlaying ? (
@@ -3256,11 +3216,13 @@ export function ClipComposer({
                 ref={programVideoRef}
                 src={previewClip.url}
                 controls={!isProgramPlaying}
+                preload="auto"
+                playsInline
                 className="absolute inset-0 h-full w-full object-contain"
                 style={previewTransitionStyle.primary}
                 onTimeUpdate={handleProgramTimeUpdate}
                 onEnded={() => {
-                  if (isProgramPlaying) {
+                  if (isProgramPlaying && !programAdvancingRef.current) {
                     advanceToNextClip();
                   }
                 }}
@@ -3272,6 +3234,7 @@ export function ClipComposer({
                     className="pointer-events-none absolute inset-0 h-full w-full object-contain"
                     style={previewTransitionStyle.incoming}
                     playsInline
+                    preload="auto"
                   />
                   <div
                     className="pointer-events-none absolute inset-0 bg-black"
@@ -3289,7 +3252,7 @@ export function ClipComposer({
           <div className="mt-2 border-t border-[rgba(229,221,210,0.85)] pt-2">
             <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
               <Typography.Text strong style={{ fontSize: 13 }}>
-                Timeline
+                时间线
               </Typography.Text>
               <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
                 视频按真实节目时长排布；转场重叠和音频轨都会直接反映在时间轴上。
@@ -3385,6 +3348,41 @@ export function ClipComposer({
               </div>
             </div>
 
+            {selectedAudioTrack ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-[16px] border border-[rgba(76,139,106,0.22)] bg-[rgba(111,178,132,0.08)] px-3 py-2">
+                <Tag color="green" style={{ margin: 0 }}>音频</Tag>
+                <Typography.Text style={{ fontSize: 12 }}>
+                  {selectedAudioTrack.title}
+                </Typography.Text>
+                <InputNumber
+                  size="small"
+                  min={0}
+                  max={200}
+                  value={selectedAudioTrack.volume}
+                  onChange={(value) => updateAudioTrack(selectedAudioTrack.id, { volume: Number(value ?? 100) })}
+                  style={{ width: 104 }}
+                  addonAfter="%"
+                />
+                <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
+                  静音
+                </Typography.Text>
+                <Switch
+                  size="small"
+                  checked={!selectedAudioTrack.muted}
+                  onChange={(checked) => updateAudioTrack(selectedAudioTrack.id, { muted: !checked })}
+                />
+                <Button
+                  size="small"
+                  danger
+                  type="text"
+                  icon={<DeleteOutlined />}
+                  onClick={() => removeAudioTrack(selectedAudioTrack.id)}
+                >
+                  删除
+                </Button>
+              </div>
+            ) : null}
+
             <div
               ref={timelineViewportRef}
               onWheel={handleTimelineWheel}
@@ -3392,7 +3390,7 @@ export function ClipComposer({
               onDragLeave={handleTimelineDragLeave}
               onDrop={handleTimelineDrop}
               className={`mt-2 overflow-x-auto rounded-[18px] border px-2 py-2 transition ${
-                isTimelineDragOver
+                timelineDropTarget === "video"
                   ? "border-emerald-400 bg-emerald-50/65"
                   : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)]"
               }`}
@@ -3416,27 +3414,20 @@ export function ClipComposer({
                     style={{ left: timelinePlayheadSec * timelinePixelsPerSecond }}
                   />
                 </div>
-                <div className="mb-1 flex items-center gap-2">
-                  <Tag color="geekblue" style={{ margin: 0 }}>
-                    V1
-                  </Tag>
-                  <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                    主视频轨
-                  </Typography.Text>
-                </div>
-                <div className="mb-2 flex items-center gap-2">
-                  <Tag color="green" style={{ margin: 0 }}>
-                    A1
-                  </Tag>
-                  <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                    音频轨
-                  </Typography.Text>
-                </div>
-                <div className="mb-3 rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.72)] px-2 py-2">
+                <div
+                  className={`mb-3 rounded-[16px] border px-2 py-2 transition ${
+                    timelineDropTarget === "audio"
+                      ? "border-emerald-400 bg-emerald-50/65"
+                      : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.72)]"
+                  }`}
+                  onDragOver={handleAudioTrackDragOver}
+                  onDragLeave={handleAudioTrackDragLeave}
+                  onDrop={handleAudioTrackDrop}
+                >
                   <div className="relative h-12" style={{ minWidth: timelineTrackWidth }}>
                     {audioTimelineSegments.length === 0 ? (
                       <div className="flex h-full items-center justify-center text-[11px] text-[var(--af-muted)]">
-                        还没有音频轨
+                        把右侧视频素材拖到这里，即可只取声音生成音频轨
                       </div>
                     ) : audioTimelineSegments.map((segment) => (
                       <div
@@ -3448,6 +3439,7 @@ export function ClipComposer({
                           opacity: segment.track.muted ? 0.5 : 1,
                         }}
                         onMouseDown={(event) => handleAudioTrackMoveMouseDown(segment.track.id, event)}
+                        onClick={() => setSelectedAudioTrackId(segment.track.id)}
                       >
                         <button
                           type="button"
@@ -3549,6 +3541,12 @@ export function ClipComposer({
         </Space>
       </div>
       <div className="hidden">
+        <video
+          ref={programPreloadVideoRef}
+          muted
+          playsInline
+          preload="auto"
+        />
         {currentDocument.audioTracks.map((track) => (
           <audio
             key={track.id}
