@@ -42,6 +42,13 @@ interface TemplatePreset {
   content: string;
 }
 
+interface StrategyPreset {
+  id: string;
+  title: string;
+  summary: string;
+  blueprint: Partial<AtelierBlueprintState>;
+}
+
 type StoryboardDensityPreset = "single" | "grid_2x2" | "grid_3x3";
 type ReferenceRoutePreset = "auto" | "first_frame" | "first_last_frame" | "mixed_refs";
 
@@ -80,6 +87,55 @@ const TEMPLATE_PRESETS: TemplatePreset[] = [
     title: "空镜节奏",
     summary: "强化场景和空镜，适合品牌片和情绪片。",
     content: "优先补 scene_ref 和 empty_shot_ref，要求 Agent 主动加入节奏过渡镜头，不要只堆主镜头和角色镜头。",
+  },
+];
+
+const STRATEGY_PRESETS: StrategyPreset[] = [
+  {
+    id: "stable_opening",
+    title: "稳起稿",
+    summary: "先锁起始构图，再决定要不要补终点落位。",
+    blueprint: {
+      storyboardDensity: "grid_2x2",
+      referenceRoute: "first_frame",
+      checkpointAlignmentRequired: true,
+      enableSelfReview: true,
+    },
+  },
+  {
+    id: "dialogue_story",
+    title: "对白叙事",
+    summary: "对白先行，镜头围绕台词节拍组织。",
+    blueprint: {
+      storyboardDensity: "single",
+      referenceRoute: "first_frame",
+      dialogueFirst: true,
+      checkpointAlignmentRequired: true,
+      enableSelfReview: true,
+    },
+  },
+  {
+    id: "rhythm_cutaway",
+    title: "节奏空镜",
+    summary: "优先空镜与过渡，适合品牌片和情绪片。",
+    blueprint: {
+      storyboardDensity: "grid_2x2",
+      emptyShotPriority: true,
+      multiClip: true,
+      enableSelfReview: true,
+    },
+  },
+  {
+    id: "explore_then_cut",
+    title: "探索后粗剪",
+    summary: "先做更宽的探索，再保留多候选进入粗剪。",
+    blueprint: {
+      storyboardDensity: "grid_3x3",
+      referenceRoute: "mixed_refs",
+      multiClip: true,
+      checkpointAlignmentRequired: true,
+      enableSelfReview: true,
+    },
   },
 ];
 
@@ -240,6 +296,7 @@ export function ProSettingsPanel({
   layout = "inline",
 }: ProSettingsPanelProps) {
   const { message } = App.useApp();
+  const [activeTab, setActiveTab] = useState("atelier");
   const [draftMemoryUser, setDraftMemoryUser] = useState(memoryUser);
   const [draftConfig, setDraftConfig] = useState<VideoProConfig>(config);
   const [atelier, setAtelier] = useState<AtelierBlueprintState>(() => buildAtelierBlueprintFromConfig(config));
@@ -251,6 +308,7 @@ export function ProSettingsPanel({
 
   useEffect(() => {
     if (!active) return;
+    setActiveTab("atelier");
     setDraftMemoryUser(memoryUser);
     setDraftConfig(config);
     setAtelier(buildAtelierBlueprintFromConfig(config));
@@ -367,6 +425,19 @@ export function ProSettingsPanel({
     }));
   };
 
+  const applyStrategyPreset = (preset: StrategyPreset) => {
+    setAtelier((prev) => ({
+      ...prev,
+      ...preset.blueprint,
+    }));
+    setDraftConfig((prev) => ({
+      ...prev,
+      checkpointAlignmentRequired: preset.blueprint.checkpointAlignmentRequired ?? prev.checkpointAlignmentRequired,
+      enableSelfReview: preset.blueprint.enableSelfReview ?? prev.enableSelfReview,
+    }));
+    void message.success(`已切到策略：${preset.title}`);
+  };
+
   const applyAtelierTemplate = (mode: "replace" | "append") => {
     const workflowText = buildAtelierWorkflowText(atelier);
     setDraftConfig((prev) => ({
@@ -403,70 +474,9 @@ export function ProSettingsPanel({
   const tabs = (
     <Tabs
       size="small"
+      activeKey={activeTab}
+      onChange={setActiveTab}
       items={[
-        {
-          key: "knowledge",
-          label: "Knowledge",
-          children: (
-            <div className="space-y-3">
-              <Alert
-                showIcon
-                type="info"
-                title="这里定义的是长期知识叠层，不是单轮 prompt。适合写审美边界、禁忌和习惯。"
-              />
-              <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>长期知识补充</Typography.Text>
-                <Input.TextArea
-                  className="mt-2"
-                  autoSize={{ minRows: 8, maxRows: 16 }}
-                  value={draftConfig.customKnowledge}
-                  onChange={(event) => setDraftConfig((prev) => ({ ...prev, customKnowledge: event.target.value }))}
-                  placeholder="例如：更偏奶油暖调，不要廉价广告感；遇到叙事镜头时优先补空镜和呼吸镜头；角色镜头不要过多机位抖动。"
-                />
-              </Card>
-              <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>知识写法建议</Typography.Text>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Tag>写偏好，而不是写命令口号</Tag>
-                  <Tag>写禁忌，例如不要过曝、不要廉价字幕感</Tag>
-                  <Tag>写镜头语言，例如先空镜再角色</Tag>
-                  <Tag>写素材策略，例如不足时先补分镜</Tag>
-                </div>
-              </Card>
-            </div>
-          ),
-        },
-        {
-          key: "templates",
-          label: "Workflow",
-          children: (
-            <div className="space-y-3">
-              <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>默认工作流模板</Typography.Text>
-                <Input.TextArea
-                  className="mt-2"
-                  autoSize={{ minRows: 8, maxRows: 16 }}
-                  value={draftConfig.workflowTemplate}
-                  onChange={(event) => setDraftConfig((prev) => ({ ...prev, workflowTemplate: event.target.value }))}
-                  placeholder="例如：先四宫格分镜，再角色立绘，再首帧视频验证动作，稳定后进入多候选粗剪。"
-                />
-              </Card>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                {TEMPLATE_PRESETS.map((preset) => (
-                  <Card key={preset.id} size="small" className="!rounded-[18px]">
-                    <Typography.Text strong>{preset.title}</Typography.Text>
-                    <Typography.Paragraph style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: "var(--af-muted)" }}>
-                      {preset.summary}
-                    </Typography.Paragraph>
-                    <Button size="small" onClick={() => applyTemplatePreset(preset)}>
-                      叠加到模板
-                    </Button>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          ),
-        },
         {
           key: "atelier",
           label: "Strategy",
@@ -475,8 +485,60 @@ export function ProSettingsPanel({
               <Alert
                 showIcon
                 type="success"
-                title="这里收口默认路线、参考策略和 review gate。少切 tab，先把当前序列的导演策略定清楚。"
+                title="先把这轮导演策略定下来：路线、探索密度、review gate 都在这里一次定清。"
               />
+              <Card size="small" className="!rounded-[18px]">
+                <Typography.Text strong>Quick Setups</Typography.Text>
+                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {STRATEGY_PRESETS.map((preset) => (
+                    <div key={preset.id} className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] px-3 py-3">
+                      <Typography.Text strong>{preset.title}</Typography.Text>
+                      <Typography.Paragraph style={{ margin: "8px 0 12px", fontSize: 12, color: "var(--af-muted)" }}>
+                        {preset.summary}
+                      </Typography.Paragraph>
+                      <Button size="small" onClick={() => applyStrategyPreset(preset)}>
+                        应用策略
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+
+              <Card size="small" className="!rounded-[18px]">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <Typography.Text strong>Current Strategy</Typography.Text>
+                  <Space size={8}>
+                    <Button size="small" onClick={() => applyAtelierTemplate("append")}>
+                      叠加到模板
+                    </Button>
+                    <Button size="small" type="primary" onClick={() => applyAtelierTemplate("replace")}>
+                      覆盖模板
+                    </Button>
+                    <Button size="small" onClick={applyAtelierKnowledge}>
+                      写入知识
+                    </Button>
+                  </Space>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Tag color="blue">{atelier.storyboardDensity === "grid_3x3" ? "九宫格探索" : atelier.storyboardDensity === "grid_2x2" ? "四宫格探索" : "单张确认"}</Tag>
+                  <Tag color="gold">
+                    {atelier.referenceRoute === "first_last_frame"
+                      ? "首尾帧"
+                      : atelier.referenceRoute === "first_frame"
+                        ? "首帧"
+                        : atelier.referenceRoute === "mixed_refs"
+                          ? "mixed refs"
+                          : "自动路线"}
+                  </Tag>
+                  {atelier.characterPriority ? <Tag>角色优先</Tag> : null}
+                  {atelier.emptyShotPriority ? <Tag>空镜优先</Tag> : null}
+                  {atelier.dialogueFirst ? <Tag>对白优先</Tag> : null}
+                  {atelier.multiClip ? <Tag>多候选粗剪</Tag> : null}
+                  {atelier.checkpointAlignmentRequired ? <Tag color="green">Checkpoint</Tag> : <Tag>直接推进</Tag>}
+                  {atelier.enableSelfReview ? <Tag color="purple">阶段性评审</Tag> : null}
+                </div>
+              </Card>
+
               <Card size="small" className="!rounded-[18px]">
                 <Typography.Text strong>Storyboard Density</Typography.Text>
                 <div className="mt-2">
@@ -568,26 +630,11 @@ export function ProSettingsPanel({
               <Card size="small" className="!rounded-[18px]">
                 <div className="flex items-center justify-between gap-3">
                   <Typography.Text strong>Strategy Preview</Typography.Text>
-                  <Space>
-                    <Button size="small" onClick={() => applyAtelierTemplate("append")}>
-                      叠加到模板
-                    </Button>
-                    <Button size="small" type="primary" onClick={() => applyAtelierTemplate("replace")}>
-                      覆盖模板
-                    </Button>
-                  </Space>
+                  <Tag color="processing" style={{ margin: 0 }}>Prompt-ready</Tag>
                 </div>
                 <pre className="mt-3 overflow-auto rounded-[16px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.78)] px-3 py-3 text-[11px] leading-relaxed text-[var(--af-text)]">
                   {buildAtelierWorkflowText(atelier)}
                 </pre>
-                <div className="mt-3 flex items-center justify-between gap-3">
-                  <Typography.Text style={{ fontSize: 12, color: "var(--af-muted)" }}>
-                    如果想把它变成长期偏好，而不是当前模板，可以写入知识层。
-                  </Typography.Text>
-                  <Button size="small" onClick={applyAtelierKnowledge}>
-                    叠加到知识
-                  </Button>
-                </div>
               </Card>
 
               <Card size="small" className="!rounded-[18px]">
@@ -644,6 +691,69 @@ export function ProSettingsPanel({
                       onChange={(checked) => setDraftConfig((prev) => ({ ...prev, enableSelfReview: checked }))}
                     />
                   </div>
+                </div>
+              </Card>
+            </div>
+          ),
+        },
+        {
+          key: "templates",
+          label: "Workflow",
+          children: (
+            <div className="space-y-3">
+              <Card size="small" className="!rounded-[18px]">
+                <Typography.Text strong>默认工作流模板</Typography.Text>
+                <Input.TextArea
+                  className="mt-2"
+                  autoSize={{ minRows: 8, maxRows: 16 }}
+                  value={draftConfig.workflowTemplate}
+                  onChange={(event) => setDraftConfig((prev) => ({ ...prev, workflowTemplate: event.target.value }))}
+                  placeholder="例如：先四宫格分镜，再角色立绘，再首帧视频验证动作，稳定后进入多候选粗剪。"
+                />
+              </Card>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {TEMPLATE_PRESETS.map((preset) => (
+                  <Card key={preset.id} size="small" className="!rounded-[18px]">
+                    <Typography.Text strong>{preset.title}</Typography.Text>
+                    <Typography.Paragraph style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: "var(--af-muted)" }}>
+                      {preset.summary}
+                    </Typography.Paragraph>
+                    <Button size="small" onClick={() => applyTemplatePreset(preset)}>
+                      叠加到模板
+                    </Button>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ),
+        },
+        {
+          key: "knowledge",
+          label: "Knowledge",
+          children: (
+            <div className="space-y-3">
+              <Alert
+                showIcon
+                type="info"
+                title="这里定义的是长期知识叠层，不是单轮 prompt。适合写审美边界、禁忌和习惯。"
+              />
+              <Card size="small" className="!rounded-[18px]">
+                <Typography.Text strong>长期知识补充</Typography.Text>
+                <Input.TextArea
+                  className="mt-2"
+                  autoSize={{ minRows: 8, maxRows: 16 }}
+                  value={draftConfig.customKnowledge}
+                  onChange={(event) => setDraftConfig((prev) => ({ ...prev, customKnowledge: event.target.value }))}
+                  placeholder="例如：更偏奶油暖调，不要廉价广告感；遇到叙事镜头时优先补空镜和呼吸镜头；角色镜头不要过多机位抖动。"
+                />
+              </Card>
+              <Card size="small" className="!rounded-[18px]">
+                <Typography.Text strong>知识写法建议</Typography.Text>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Tag>写偏好，而不是写命令口号</Tag>
+                  <Tag>写禁忌，例如不要过曝、不要廉价字幕感</Tag>
+                  <Tag>写镜头语言，例如先空镜再角色</Tag>
+                  <Tag>写素材策略，例如不足时先补分镜</Tag>
                 </div>
               </Card>
             </div>

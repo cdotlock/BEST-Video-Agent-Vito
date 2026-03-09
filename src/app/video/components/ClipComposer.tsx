@@ -23,17 +23,25 @@ import {
   Space,
   Switch,
   Tag,
+  Tooltip,
   Typography,
 } from "antd";
 import {
   CaretRightOutlined,
+  CopyOutlined,
   DeleteOutlined,
+  LeftOutlined,
+  MinusOutlined,
   PauseCircleOutlined,
+  PlusOutlined,
   RedoOutlined,
+  RightOutlined,
   SaveOutlined,
   ScissorOutlined,
   ThunderboltOutlined,
   UndoOutlined,
+  ZoomInOutlined,
+  ZoomOutOutlined,
 } from "@ant-design/icons";
 import {
   DndContext,
@@ -166,7 +174,6 @@ interface ClipFramePreviewProps {
   url: string | null;
   inSec: number;
   title: string;
-  compact: boolean;
 }
 
 export interface ClipComposerProps {
@@ -507,7 +514,6 @@ function ClipFramePreview({
   url,
   inSec,
   title,
-  compact,
 }: ClipFramePreviewProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -551,9 +557,7 @@ function ClipFramePreview({
   if (!url) {
     return (
       <div
-        className={`flex w-full items-center justify-center rounded-[10px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[10px] text-[var(--af-muted)] ${
-          compact ? "h-8" : "h-12"
-        }`}
+        className="flex h-12 w-full items-center justify-center rounded-[10px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[10px] text-[var(--af-muted)]"
       >
         无预览
       </div>
@@ -561,7 +565,7 @@ function ClipFramePreview({
   }
 
   return (
-    <div className={`overflow-hidden rounded-[10px] border border-[rgba(229,221,210,0.9)] ${compact ? "h-8" : "h-12"}`}>
+    <div className="h-12 overflow-hidden rounded-[10px] border border-[rgba(229,221,210,0.9)]">
       <video
         ref={videoRef}
         src={url}
@@ -608,7 +612,7 @@ function SortableClipBlock({
     <div
       ref={setNodeRef}
       style={style}
-      className={`group relative rounded-[14px] border px-2 py-1.5 shadow-sm transition ${
+      className={`group relative flex h-[118px] flex-col overflow-hidden rounded-[14px] border px-2 py-2 shadow-sm transition ${
         active
           ? "border-[var(--af-brand)] bg-[rgba(255,253,249,0.98)]"
           : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.9)]"
@@ -637,30 +641,26 @@ function SortableClipBlock({
         onMouseDown={(event) => onTrimMouseDown(clip.id, "end", event)}
         onClick={(event) => event.stopPropagation()}
       />
-      <div className="mb-2">
+      <div className="mb-2 shrink-0">
         <ClipFramePreview
           url={clip.url}
           inSec={clip.inSec}
           title={clip.title}
-          compact={compact}
         />
       </div>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-[11px] font-medium text-[var(--af-text)]">
-            {index + 1}. {clip.title}
+      <div className="flex min-h-0 flex-1 flex-col justify-between">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="truncate text-[11px] font-medium text-[var(--af-text)]">
+              {index + 1}. {clip.title}
+            </div>
+            <div className="truncate text-[10px] text-[var(--af-muted)]">
+              {transitionLabel(clip.transition)} · {(clip.outSec - clip.inSec).toFixed(2)}s
+            </div>
+            <div className="truncate text-[9px] text-[var(--af-muted)]">
+              TL {timelineStartSec.toFixed(2)}s - {timelineEndSec.toFixed(2)}s
+            </div>
           </div>
-          <div className="mt-0.5 text-[10px] text-[var(--af-muted)]">
-            {transitionLabel(clip.transition)} · {(clip.outSec - clip.inSec).toFixed(2)}s
-          </div>
-          <div className="text-[9px] text-[var(--af-muted)]">
-            TL {timelineStartSec.toFixed(2)}s - {timelineEndSec.toFixed(2)}s
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
-          <span className="rounded-full border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.9)] px-2 py-1 text-[10px] text-[var(--af-muted)]">
-            拖动排序
-          </span>
           <Button
             size="small"
             type="text"
@@ -672,10 +672,13 @@ function SortableClipBlock({
             }}
           />
         </div>
-      </div>
-      <div className="mt-1 flex items-center justify-between text-[9px] text-[var(--af-muted)]">
-        <span>{clip.inSec.toFixed(2)}s</span>
-        <span>{clip.outSec.toFixed(2)}s</span>
+        <div className="mt-2 flex items-center justify-between gap-2 text-[9px] text-[var(--af-muted)]">
+          <span>{clip.inSec.toFixed(2)}s</span>
+          <span className="truncate rounded-full border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.9)] px-2 py-0.5 text-[9px] text-[var(--af-muted)]">
+            {compact ? "拖动" : "拖动排序"}
+          </span>
+          <span>{clip.outSec.toFixed(2)}s</span>
+        </div>
       </div>
     </div>
   );
@@ -706,12 +709,13 @@ export function ClipComposer({
   const [programPlaybackIndex, setProgramPlaybackIndex] = useState<number | null>(null);
   const [timelinePlayheadSec, setTimelinePlayheadSec] = useState(0);
   const [isTimelineDragOver, setIsTimelineDragOver] = useState(false);
+  const [inspectorExpanded, setInspectorExpanded] = useState(false);
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
-  const [fitTimelineToView, setFitTimelineToView] = useState(true);
+  const [fitTimelineToView, setFitTimelineToView] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: { distance: 6 },
+      activationConstraint: { distance: 4 },
     }),
   );
 
@@ -945,7 +949,7 @@ export function ClipComposer({
 
     const queuedResource = queuedClipResource.resource;
     if (queuedResource.mediaType !== "video" || !queuedResource.url) {
-      void message.warning("仅已生成的视频素材可以加入粗剪。");
+      void message.warning("仅已生成的视频素材可以加入时间线。");
       onConsumeQueuedClipResource?.();
       return;
     }
@@ -1776,6 +1780,14 @@ export function ClipComposer({
     return "未开始";
   }, [autosaveState, lastSavedAt]);
 
+  const adjustTimelineZoom = useCallback((delta: number) => {
+    setFitTimelineToView(false);
+    commitDocument((current) => ({
+      ...current,
+      timelineZoom: clamp(current.timelineZoom + delta, 8, 120),
+    }), { recordHistory: false });
+  }, [commitDocument]);
+
   useEffect(() => {
     const viewport = timelineViewportRef.current;
     if (!viewport) return;
@@ -1968,86 +1980,118 @@ export function ClipComposer({
 
       <div className="overflow-x-auto pb-1">
         <div
-          className="grid min-w-[1080px] gap-4"
-          style={{ gridTemplateColumns: "248px minmax(0, 1fr)" }}
+          className="grid min-w-[860px] gap-3"
+          style={{ gridTemplateColumns: `${inspectorExpanded ? 224 : 76}px minmax(0, 1fr)` }}
         >
         <Card
           className="ceramic-panel !border-transparent"
-          title="Inspector"
-          extra={selectedClip ? <Tag style={{ margin: 0 }}>#{selectedClipIndex + 1}</Tag> : null}
+          styles={{ body: { padding: inspectorExpanded ? 16 : 12 } }}
         >
-          {!selectedClip ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择时间线中的片段后可在这里精修。" />
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  片段标题
-                </Typography.Text>
-                <Input
-                  className="mt-1"
-                  value={selectedClip.title}
-                  onChange={(event) => updateSelectedClip({ title: event.target.value })}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div>
-                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                    In
+          <div className={`flex h-full flex-col ${inspectorExpanded ? "gap-4" : "gap-3"}`}>
+            <div className={`flex items-center ${inspectorExpanded ? "justify-between" : "justify-center"}`}>
+              {inspectorExpanded ? (
+                <div className="min-w-0">
+                  <Typography.Text strong style={{ fontSize: 13 }}>
+                    Inspector
                   </Typography.Text>
-                  <InputNumber
-                    className="mt-1"
-                    min={0}
-                    value={selectedClip.inSec}
-                    onChange={(value) => updateSelectedClip({ inSec: Number(value ?? 0) })}
-                    style={{ width: "100%" }}
-                  />
+                  <div className="mt-0.5 text-[11px] text-[var(--af-muted)]">
+                    {selectedClip ? `片段 #${selectedClipIndex + 1}` : "选择片段后精修"}
+                  </div>
                 </div>
-                <div>
-                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                    Out
-                  </Typography.Text>
-                  <InputNumber
-                    className="mt-1"
-                    min={selectedClip.inSec}
-                    value={selectedClip.outSec}
-                    onChange={(value) => updateSelectedClip({ outSec: Number(value ?? selectedClip.inSec) })}
-                    style={{ width: "100%" }}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                  转场
-                </Typography.Text>
-                <Select<ClipTransition>
-                  className="mt-1"
-                  value={selectedClip.transition}
-                  onChange={(value) => updateSelectedClip({ transition: value })}
-                  style={{ width: "100%" }}
-                  options={[
-                    { value: "none", label: transitionLabel("none") },
-                    { value: "cut", label: transitionLabel("cut") },
-                    { value: "fade", label: transitionLabel("fade") },
-                    { value: "dissolve", label: transitionLabel("dissolve") },
-                    { value: "wipe_left", label: transitionLabel("wipe_left") },
-                    { value: "fade_black", label: transitionLabel("fade_black") },
-                  ]}
+              ) : null}
+              <Tooltip title={inspectorExpanded ? "收起 Inspector" : "展开 Inspector"}>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={inspectorExpanded ? <LeftOutlined /> : <RightOutlined />}
+                  onClick={() => setInspectorExpanded((prev) => !prev)}
                 />
-              </div>
-
-              <div className="rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] p-3">
-                <div className="text-[11px] text-[var(--af-muted)]">片段信息</div>
-                <div className="mt-2 space-y-1 text-[12px] text-[var(--af-text)]">
-                  <div>时长：{(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s</div>
-                  <div>源素材：{selectedClip.resourceId ? (videoItemMap.get(selectedClip.resourceId)?.title ?? selectedClip.resourceId) : "未绑定"}</div>
-                  <div>源时长：{selectedClip.sourceDurationSec ? `${selectedClip.sourceDurationSec.toFixed(2)}s` : "未检测"}</div>
-                </div>
-              </div>
+              </Tooltip>
             </div>
-          )}
+
+            {!inspectorExpanded ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
+                <Tag style={{ margin: 0 }}>{selectedClip ? `#${selectedClipIndex + 1}` : "无片段"}</Tag>
+                <div className="text-[11px] text-[var(--af-muted)]">
+                  {selectedClip ? `${(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s` : "点击展开"}
+                </div>
+                <div className="text-[10px] text-[var(--af-muted)]">
+                  {selectedClip?.transition ? transitionLabel(selectedClip.transition) : "Inspector"}
+                </div>
+              </div>
+            ) : !selectedClip ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择时间线中的片段后可在这里精修。" />
+            ) : (
+              <>
+                <div>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    片段标题
+                  </Typography.Text>
+                  <Input
+                    className="mt-1"
+                    value={selectedClip.title}
+                    onChange={(event) => updateSelectedClip({ title: event.target.value })}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                      In
+                    </Typography.Text>
+                    <InputNumber
+                      className="mt-1"
+                      min={0}
+                      value={selectedClip.inSec}
+                      onChange={(value) => updateSelectedClip({ inSec: Number(value ?? 0) })}
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                  <div>
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                      Out
+                    </Typography.Text>
+                    <InputNumber
+                      className="mt-1"
+                      min={selectedClip.inSec}
+                      value={selectedClip.outSec}
+                      onChange={(value) => updateSelectedClip({ outSec: Number(value ?? selectedClip.inSec) })}
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    转场
+                  </Typography.Text>
+                  <Select<ClipTransition>
+                    className="mt-1"
+                    value={selectedClip.transition}
+                    onChange={(value) => updateSelectedClip({ transition: value })}
+                    style={{ width: "100%" }}
+                    options={[
+                      { value: "none", label: transitionLabel("none") },
+                      { value: "cut", label: transitionLabel("cut") },
+                      { value: "fade", label: transitionLabel("fade") },
+                      { value: "dissolve", label: transitionLabel("dissolve") },
+                      { value: "wipe_left", label: transitionLabel("wipe_left") },
+                      { value: "fade_black", label: transitionLabel("fade_black") },
+                    ]}
+                  />
+                </div>
+
+                <div className="rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] p-3">
+                  <div className="text-[11px] text-[var(--af-muted)]">片段信息</div>
+                  <div className="mt-2 space-y-1 text-[12px] text-[var(--af-text)]">
+                    <div>时长：{(selectedClip.outSec - selectedClip.inSec).toFixed(2)}s</div>
+                    <div>源素材：{selectedClip.resourceId ? (videoItemMap.get(selectedClip.resourceId)?.title ?? selectedClip.resourceId) : "未绑定"}</div>
+                    <div>源时长：{selectedClip.sourceDurationSec ? `${selectedClip.sourceDurationSec.toFixed(2)}s` : "未检测"}</div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </Card>
 
         <div className="flex min-h-0 flex-col gap-2">
@@ -2095,49 +2139,70 @@ export function ClipComposer({
               </Typography.Text>
             </div>
             <div className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] px-2.5 py-1.5">
-              <div className="mb-1.5 flex flex-wrap items-center gap-2">
-                <Space size={8}>
-                  <Button size="small" icon={<UndoOutlined />} disabled={editor.historyIndex === 0} onClick={handleUndo}>
-                    撤销
-                  </Button>
+              <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pb-1">
+                <Tooltip title="撤销">
+                  <Button size="small" icon={<UndoOutlined />} disabled={editor.historyIndex === 0} onClick={handleUndo} />
+                </Tooltip>
+                <Tooltip title="重做">
                   <Button
                     size="small"
                     icon={<RedoOutlined />}
                     disabled={editor.historyIndex >= editor.history.length - 1}
                     onClick={handleRedo}
-                  >
-                    重做
-                  </Button>
+                  />
+                </Tooltip>
+                <Tooltip title="复制片段">
                   <Button
                     size="small"
-                    icon={<ScissorOutlined />}
+                    icon={<CopyOutlined />}
                     disabled={!selectedClip}
                     onClick={duplicateSelectedClip}
-                  >
-                    复制片段
-                  </Button>
-                  <Button size="small" icon={<ScissorOutlined />} disabled={!playheadSegment} onClick={splitClipAtPlayhead}>
-                    播放头切割
-                  </Button>
+                  />
+                </Tooltip>
+                <Tooltip title="播放头切割">
+                  <Button size="small" icon={<ScissorOutlined />} disabled={!playheadSegment} onClick={splitClipAtPlayhead} />
+                </Tooltip>
+                <Tooltip title="波纹删除">
                   <Button
                     size="small"
                     danger
                     icon={<DeleteOutlined />}
                     disabled={!selectedClip}
                     onClick={handleRippleDelete}
-                  >
-                    波纹删除
-                  </Button>
-                </Space>
-              </div>
-
-              <Space size={12} wrap>
-                <span className="text-[11px] text-[var(--af-muted)]">全局适配</span>
-                <Switch
+                  />
+                </Tooltip>
+                <span className="mx-1 h-5 w-px shrink-0 bg-[rgba(229,221,210,0.92)]" />
+                <Button
                   size="small"
-                  checked={fitTimelineToView}
-                  onChange={setFitTimelineToView}
-                />
+                  type={fitTimelineToView ? "primary" : "default"}
+                  onClick={() => setFitTimelineToView((prev) => !prev)}
+                >
+                  全局
+                </Button>
+                <Tooltip title="缩小">
+                  <Button size="small" icon={<MinusOutlined />} onClick={() => adjustTimelineZoom(-8)} />
+                </Tooltip>
+                <div className="flex min-w-[180px] items-center gap-1.5">
+                  <ZoomOutOutlined className="text-[11px] text-[var(--af-muted)]" />
+                  <Slider
+                    min={8}
+                    max={120}
+                    value={currentDocument.timelineZoom}
+                    onChange={(value) => {
+                      if (typeof value !== "number") return;
+                      setFitTimelineToView(false);
+                      commitDocument((current) => ({
+                        ...current,
+                        timelineZoom: value,
+                      }), { recordHistory: false });
+                    }}
+                  />
+                  <ZoomInOutlined className="text-[11px] text-[var(--af-muted)]" />
+                </div>
+                <Tooltip title="放大">
+                  <Button size="small" icon={<PlusOutlined />} onClick={() => adjustTimelineZoom(8)} />
+                </Tooltip>
+                <span className="mx-1 h-5 w-px shrink-0 bg-[rgba(229,221,210,0.92)]" />
                 <span className="text-[11px] text-[var(--af-muted)]">吸附</span>
                 <Switch
                   size="small"
@@ -2149,11 +2214,10 @@ export function ClipComposer({
                     }), { recordHistory: false });
                   }}
                 />
-                <span className="text-[11px] text-[var(--af-muted)]">Step</span>
                 <Select<number>
                   size="small"
                   value={currentDocument.snapStepSec}
-                  style={{ width: 110 }}
+                  style={{ width: 88 }}
                   onChange={(value) => {
                     commitDocument((current) => ({
                       ...current,
@@ -2166,22 +2230,6 @@ export function ClipComposer({
                     { value: 0.5, label: "0.5s" },
                     { value: 1, label: "1.0s" },
                   ]}
-                />
-              </Space>
-              <div className="mt-1.5 flex min-w-[220px] items-center gap-2">
-                <span className="text-[11px] text-[var(--af-muted)]">Zoom</span>
-                <Slider
-                  min={8}
-                  max={120}
-                  value={currentDocument.timelineZoom}
-                  disabled={fitTimelineToView}
-                  onChange={(value) => {
-                    if (typeof value !== "number") return;
-                    commitDocument((current) => ({
-                      ...current,
-                      timelineZoom: value,
-                    }), { recordHistory: false });
-                  }}
                 />
               </div>
             </div>
@@ -2236,8 +2284,8 @@ export function ClipComposer({
                         {timelineSegments.map((segment) => {
                           const clip = segment.clip;
                           const duration = Math.max(0, clip.outSec - clip.inSec);
-                          const width = Math.max(1, duration * timelinePixelsPerSecond);
-                          const compact = width < 300;
+                          const width = Math.max(80, duration * timelinePixelsPerSecond);
+                          const compact = width < 220;
                           return (
                             <SortableClipBlock
                               key={clip.id}

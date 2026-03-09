@@ -11,13 +11,12 @@ import {
   Drawer,
   Grid,
   Segmented,
-  Select,
-  Tooltip,
-  Typography,
 } from "antd";
-import { fetchJson } from "@/app/components/client-utils";
+import { fetchJson, getErrorMessage } from "@/app/components/client-utils";
+import type { SessionSummary } from "@/app/types";
 import { inferReferenceRole } from "@/lib/video/reference-roles";
 import { useVideoData } from "../hooks/useVideoData";
+import { ChatSessionRail } from "../components/ChatSessionRail";
 import { ResourcePanel } from "../components/ResourcePanel";
 import { VideoChat } from "../components/VideoChat";
 import { StyleInitPanel } from "../components/StyleInitPanel";
@@ -52,10 +51,6 @@ const DEFAULT_PRO_CONFIG: VideoProConfig = {
   enableSelfReview: true,
 };
 
-interface SessionSummaryRow {
-  id: string;
-}
-
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tagName = target.tagName.toLowerCase();
@@ -81,6 +76,8 @@ export default function VideoWorkflowPage() {
   const data = useVideoData(projectId);
 
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>();
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const [chatKey, setChatKey] = useState(() => crypto.randomUUID());
   const [autoMessage, setAutoMessage] = useState<string | undefined>(
     initialIdeaMessage && initialIdeaMessage.length > 0 ? initialIdeaMessage : undefined,
@@ -194,10 +191,6 @@ export default function VideoWorkflowPage() {
     };
   }, [data, message, projectId]);
 
-  const modeDescription = executionMode === "yolo"
-    ? "YOLO: 作为上下文偏好注入，默认自动连续推进"
-    : "Checkpoint: 作为上下文偏好注入，关键步骤倾向先确认";
-
   useEffect(() => {
     if (data.selectedSequence) return;
     const firstSequence = data.sequences[0];
@@ -210,25 +203,35 @@ export default function VideoWorkflowPage() {
     return `video:${projectId}:${data.selectedSequence.sequenceKey}`;
   }, [data.selectedSequence, projectId]);
 
-  useEffect(() => {
-    if (!currentSessionUser) return;
-    if (skipAutoRestoreUser === currentSessionUser) return;
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const rows = await fetchJson<SessionSummaryRow[]>(`/api/sessions?user=${encodeURIComponent(currentSessionUser)}`);
-        if (cancelled) return;
-        applySessionId(rows[0]?.id);
-      } catch {
-        if (!cancelled) applySessionId(undefined);
+  const refreshSessions = useCallback(async (options?: { autoSelect?: boolean }) => {
+    if (!currentSessionUser) {
+      setSessions([]);
+      if (options?.autoSelect) {
+        applySessionId(undefined);
       }
-    })();
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-    };
+    setIsLoadingSessions(true);
+    try {
+      const rows = await fetchJson<SessionSummary[]>(`/api/sessions?user=${encodeURIComponent(currentSessionUser)}`);
+      setSessions(rows);
+      if (options?.autoSelect && skipAutoRestoreUser !== currentSessionUser) {
+        applySessionId(rows[0]?.id);
+      }
+    } catch {
+      setSessions([]);
+      if (options?.autoSelect) {
+        applySessionId(undefined);
+      }
+    } finally {
+      setIsLoadingSessions(false);
+    }
   }, [applySessionId, currentSessionUser, skipAutoRestoreUser]);
+
+  useEffect(() => {
+    void refreshSessions({ autoSelect: true });
+  }, [refreshSessions]);
 
   const openStyleInit = useCallback(async () => {
     const context = await ensureVideoContext();
@@ -253,13 +256,32 @@ export default function VideoWorkflowPage() {
         setSkipAutoRestoreUser(currentSessionUser);
       }
       setAutoMessage(undefined);
+      void refreshSessions();
     },
-    [applySessionId, currentSessionUser],
+    [applySessionId, currentSessionUser, refreshSessions],
   );
 
   const handleRefreshNeeded = useCallback(() => {
-    void data.refreshAll();
-  }, [data]);
+    void Promise.all([
+      data.refreshAll(),
+      refreshSessions(),
+    ]);
+  }, [data, refreshSessions]);
+
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    if (!window.confirm("确定永久删除此会话？")) return;
+    try {
+      await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      if (currentSessionId === sessionId) {
+        applySessionId(undefined);
+      }
+      setSkipAutoRestoreUser(null);
+      await refreshSessions({ autoSelect: true });
+      void message.success("已删除会话。");
+    } catch (error) {
+      void message.error(getErrorMessage(error, "删除会话失败。"));
+    }
+  }, [applySessionId, currentSessionId, message, refreshSessions]);
 
   const handleAttachContextResource = useCallback((resource: DomainResource) => {
     setContextMaterials((prev) => {
@@ -383,7 +405,7 @@ export default function VideoWorkflowPage() {
       <main className="ceramic-page flex h-screen w-full flex-col text-[var(--af-text)]">
         <div className="px-4 pt-4">
           <header className="ceramic-topbar px-4 py-3">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <Breadcrumb
                 items={[
@@ -391,38 +413,13 @@ export default function VideoWorkflowPage() {
                   { title: projectName },
                 ]}
               />
-              <div className="mt-1.5 flex items-center gap-2">
-                <Typography.Text strong style={{ fontSize: 14 }}>
-                  {projectName}
-                </Typography.Text>
-                <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                  {data.selectedSequence
-                    ? `序列：${formatWorkspaceLabel(data.selectedSequence.sequenceKey, data.selectedSequence.sequenceName)}`
-                    : "序列未初始化"}
-                </Typography.Text>
-                <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                  {executionMode === "yolo" ? "YOLO 自动推进偏好" : "Checkpoint 审慎推进偏好"}
-                </Typography.Text>
-              </div>
             </div>
             <div className="flex items-center gap-2">
-              <Select
-                size="small"
-                value={data.selectedSequence?.id ?? undefined}
-                placeholder="选择序列"
-                options={data.sequences.map((seq) => ({
-                  value: seq.id,
-                  label: formatWorkspaceLabel(seq.sequenceKey, seq.sequenceName),
-                }))}
-                onChange={(value) => {
-                  const found = data.sequences.find((seq) => seq.id === value);
-                  if (found) handleSelectSequence(found);
-                }}
-                style={{ minWidth: 160 }}
-              />
-              <Button size="small" onClick={handleNewSession}>
-                新会话
-              </Button>
+              {!isDesktop && (
+                <Button size="small" onClick={handleNewSession}>
+                  新会话
+                </Button>
+              )}
               <Segmented<WorkspaceView>
                 size="small"
                 value={workspaceView}
@@ -436,17 +433,6 @@ export default function VideoWorkflowPage() {
                   { label: "剪辑", value: "clip" },
                 ]}
               />
-              <Tooltip title={modeDescription}>
-                <Segmented<ExecutionMode>
-                  size="small"
-                  value={executionMode}
-                  onChange={setExecutionMode}
-                  options={[
-                    { label: "检查点", value: "checkpoint" },
-                    { label: "YOLO", value: "yolo" },
-                  ]}
-                />
-              </Tooltip>
               <Button size="small" onClick={handleRefreshNeeded}>
                 刷新
               </Button>
@@ -461,69 +447,87 @@ export default function VideoWorkflowPage() {
         </div>
 
         <div className="flex min-h-0 flex-1 gap-4 px-4 pb-4 pt-4">
-          <section className="ceramic-panel relative flex min-w-0 flex-1 flex-col overflow-hidden">
-            <StyleInitPanel
-              projectId={projectId}
-              sequenceId={data.selectedSequence?.id ?? null}
-              sequenceKey={data.selectedSequence?.sequenceKey ?? null}
-              memoryUser={memoryUser}
-              onInjectMessage={handleInjectMessage}
-              openSignal={styleInitOpenSignal}
-              showInlineTrigger={false}
-            />
-
-            <DirectorConsolePanel
-              key={directorConsoleStorageKey}
-              resources={data.resources}
-              executionMode={executionMode}
-              memoryUser={memoryUser}
-              proConfig={proConfig}
-              contextMaterialCount={contextMaterials.length}
-              styleReferenceCount={styleReferenceMaterials.length}
-              workspaceLabel={data.selectedSequence
-                ? formatWorkspaceLabel(data.selectedSequence.sequenceKey, data.selectedSequence.sequenceName)
-                : undefined}
-              workspaceView={workspaceView}
-              sessionId={currentSessionId}
-              storageKey={directorConsoleStorageKey}
-              capabilitySkills={DEFAULT_SKILLS}
-              capabilityMcps={DEFAULT_MCPS}
-              onInjectMessage={handleInjectMessage}
-              onOpenStyle={() => void openStyleInit()}
-              onApplyPro={({ memoryUser: nextMemoryUser, config: nextConfig }) => {
-                setMemoryUser(nextMemoryUser);
-                setProConfig(nextConfig);
-              }}
-              onGenerateDialogueScript={() => { void requestDialogueScript(true); }}
-              onSwitchToClip={() => setWorkspaceView("clip")}
-            />
-
-            <div className="min-h-0 flex-1 pt-16 md:pt-[4.5rem]">
-              <VideoChat
-                key={chatKey}
-                initialSessionId={currentSessionId}
-                videoContext={videoContext}
-                ensureVideoContext={ensureVideoContext}
-                preloadMcps={DEFAULT_MCPS}
-                skills={DEFAULT_SKILLS}
-                onSessionCreated={handleSessionCreated}
-                onRefreshNeeded={handleRefreshNeeded}
-                autoMessage={autoMessage}
-                executionMode={executionMode}
-                onExecutionModeChange={setExecutionMode}
-                injectedMessage={injectedMessage}
-                memoryUser={memoryUser}
-                view={workspaceView}
-                resources={data.resources}
-                sequenceId={data.selectedSequence?.id ?? null}
-                proConfig={proConfig}
-                contextMaterials={contextMaterials}
-                styleReferenceMaterials={styleReferenceMaterials}
-                queuedClipResource={queuedClipResource}
-                onRemoveContextMaterial={handleRemoveContextMaterial}
-                onRemoveStyleReference={handleRemoveStyleReference}
-                onConsumeQueuedClipResource={() => setQueuedClipResource(null)}
+          <section className="ceramic-panel flex min-w-0 flex-1 overflow-hidden">
+            {isDesktop && workspaceView === "chat" ? (
+              <ChatSessionRail
+                sequences={data.sequences}
+                selectedSequenceId={data.selectedSequence?.id ?? null}
+                onSelectSequence={(sequenceId) => {
+                  const found = data.sequences.find((sequence) => sequence.id === sequenceId);
+                  if (found) handleSelectSequence(found);
+                }}
+                formatSequenceLabel={formatWorkspaceLabel}
+                sessions={sessions}
+                currentSessionId={currentSessionId}
+                isLoadingSessions={isLoadingSessions}
+                onRefreshSessions={() => { void refreshSessions(); }}
+                onNewSession={handleNewSession}
+                onSelectSession={(sessionId) => switchSession(sessionId)}
+                onDeleteSession={(sessionId) => { void handleDeleteSession(sessionId); }}
               />
+            ) : null}
+
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <StyleInitPanel
+                projectId={projectId}
+                sequenceId={data.selectedSequence?.id ?? null}
+                sequenceKey={data.selectedSequence?.sequenceKey ?? null}
+                memoryUser={memoryUser}
+                onInjectMessage={handleInjectMessage}
+                openSignal={styleInitOpenSignal}
+                showInlineTrigger={false}
+              />
+
+              <DirectorConsolePanel
+                key={directorConsoleStorageKey}
+                resources={data.resources}
+                executionMode={executionMode}
+                memoryUser={memoryUser}
+                proConfig={proConfig}
+                contextMaterialCount={contextMaterials.length}
+                styleReferenceCount={styleReferenceMaterials.length}
+                workspaceView={workspaceView}
+                sessionId={currentSessionId}
+                storageKey={directorConsoleStorageKey}
+                capabilitySkills={DEFAULT_SKILLS}
+                capabilityMcps={DEFAULT_MCPS}
+                onInjectMessage={handleInjectMessage}
+                onOpenStyle={() => void openStyleInit()}
+                onApplyPro={({ memoryUser: nextMemoryUser, config: nextConfig }) => {
+                  setMemoryUser(nextMemoryUser);
+                  setProConfig(nextConfig);
+                }}
+                onGenerateDialogueScript={() => { void requestDialogueScript(true); }}
+                onSwitchToClip={() => setWorkspaceView("clip")}
+              />
+
+              <div className="min-h-0 flex-1 pt-16 md:pt-[4.5rem]">
+                <VideoChat
+                  key={chatKey}
+                  initialSessionId={currentSessionId}
+                  videoContext={videoContext}
+                  ensureVideoContext={ensureVideoContext}
+                  preloadMcps={DEFAULT_MCPS}
+                  skills={DEFAULT_SKILLS}
+                  onSessionCreated={handleSessionCreated}
+                  onRefreshNeeded={handleRefreshNeeded}
+                  autoMessage={autoMessage}
+                  executionMode={executionMode}
+                  onExecutionModeChange={setExecutionMode}
+                  injectedMessage={injectedMessage}
+                  memoryUser={memoryUser}
+                  view={workspaceView}
+                  resources={data.resources}
+                  sequenceId={data.selectedSequence?.id ?? null}
+                  proConfig={proConfig}
+                  contextMaterials={contextMaterials}
+                  styleReferenceMaterials={styleReferenceMaterials}
+                  queuedClipResource={queuedClipResource}
+                  onRemoveContextMaterial={handleRemoveContextMaterial}
+                  onRemoveStyleReference={handleRemoveStyleReference}
+                  onConsumeQueuedClipResource={() => setQueuedClipResource(null)}
+                />
+              </div>
             </div>
           </section>
 

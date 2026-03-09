@@ -86,12 +86,11 @@
 
 1. 顶栏
    - Breadcrumb
-   - 项目名 / Sequence capsule
-   - `Checkpoint / YOLO`
    - `Chat / Clip`
 2. 中间主舞台
    - 顶部 `灵动岛`
    - Chat 导演台或 Clip Studio
+   - Chat 视图内左侧补入 `会话列表`，用于切换历史线程与新建会话
 3. 右侧资产图谱
    - 顶部 `Resource Mix / Semantic Roles`
    - 按媒体维度组织
@@ -332,13 +331,13 @@ Clip 不应再是“表单式片段列表”，而要成为专业粗剪台。
 当前实现约定：
 
 1. `Clip Studio` 已收口为 `左侧 Properties & Effects / 中央 Preview + Timeline Stage / 页面右侧 Asset Atlas`
-2. 中央主舞台采用接近剪映 / iMovie 的工作台模式：左侧小 Inspector + 右侧中上 Preview + 右侧下方 Timeline，三者位置关系固定，不因宽比换位
+2. 中央主舞台采用接近剪映 / iMovie 的工作台模式：左侧窄 Inspector Rail（点击展开） + 右侧中上 Preview + 右侧下方 Timeline，三者位置关系固定，不因宽比换位
 3. 自动保存通过 `clip-plan timeline_v2 + editorState` 持久化
 4. 若服务器已有 clip plan，则优先恢复；否则回退到本地草稿或现有视频候选起稿
 5. 进入剪辑时，现有视频候选应默认按顺序进入时间线起稿；`加入时间线` 的资产动作仍可继续把单条视频送入当前时间线，形成 Asset Atlas -> Clip Studio 的闭环
 6. 时间尺必须支持 click / drag scrub，并驱动 playhead、当前片段与 Preview Monitor 联动
 7. 手动保存后会主动写回路径评审与编辑偏好，作为后续路径推荐和上下文组装输入
-8. 时间线首期已提供 `播放头切割（Split）` 与 `波纹删除（Ripple Delete）` 的显式动作，并支持整块拖动排序、边缘直接裁切与全局适配视图
+8. 时间线首期已提供 `播放头切割（Split）` 与 `波纹删除（Ripple Delete）` 的显式动作，并支持整块拖动排序、边缘直接裁切、固定高度时间块与单行工具栏
 9. 提供 `AI 自动粗剪` 一键能力：按现有视频候选自动生成粗剪序列并应用基础转场预设（Cut / Fade / Dissolve / Wipe Left / Fade Black）
 
 ## 7.4 对白脚本确认层

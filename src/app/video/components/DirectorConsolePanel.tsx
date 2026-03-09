@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import {
-  BgColorsOutlined,
   CloseOutlined,
   DownOutlined,
   FireOutlined,
@@ -16,7 +15,6 @@ import { ProSettingsPanel } from "./ProSettingsPanel";
 import type {
   DomainResources,
   ExecutionMode,
-  MemoryRecommendations,
   VideoProConfig,
   WorkflowPathRecommendationsResult,
   WorkspaceView,
@@ -47,7 +45,6 @@ interface DirectorConsolePanelProps {
   proConfig: VideoProConfig;
   contextMaterialCount: number;
   styleReferenceCount: number;
-  workspaceLabel?: string;
   workspaceView: WorkspaceView;
   sessionId?: string;
   storageKey: string;
@@ -609,7 +606,6 @@ export function DirectorConsolePanel({
   proConfig,
   contextMaterialCount,
   styleReferenceCount,
-  workspaceLabel,
   workspaceView,
   sessionId,
   storageKey,
@@ -624,7 +620,6 @@ export function DirectorConsolePanel({
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"monitor" | "pro">("monitor");
   const [isLoadingIntel, setIsLoadingIntel] = useState(false);
-  const [memorySummary, setMemorySummary] = useState<MemoryRecommendations | null>(null);
   const [pathSummary, setPathSummary] = useState<WorkflowPathRecommendationsResult | null>(null);
 
   const configText = useMemo(
@@ -681,7 +676,7 @@ export function DirectorConsolePanel({
   }, [activeTab, isOpen]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || activeTab !== "monitor") return;
     let cancelled = false;
     const params = new URLSearchParams({ memoryUser });
     const goal = proConfig.workflowTemplate.trim() || proConfig.customKnowledge.trim();
@@ -712,19 +707,16 @@ export function DirectorConsolePanel({
     const loadIntel = async () => {
       setIsLoadingIntel(true);
       try {
-        const [memoryResult, pathResult] = await Promise.allSettled([
-          fetchJson<MemoryRecommendations>(
-            `/api/video/memory/recommendations?memoryUser=${encodeURIComponent(memoryUser)}`,
-          ),
-          fetchJson<WorkflowPathRecommendationsResult>(
-            `/api/video/memory/path-recommendations?${params.toString()}`,
-          ),
-        ]);
+        const pathResult = await fetchJson<WorkflowPathRecommendationsResult>(
+          `/api/video/memory/path-recommendations?${params.toString()}`,
+        );
 
         if (cancelled) return;
-
-        setMemorySummary(memoryResult.status === "fulfilled" ? memoryResult.value : null);
-        setPathSummary(pathResult.status === "fulfilled" ? pathResult.value : null);
+        setPathSummary(pathResult);
+      } catch {
+        if (!cancelled) {
+          setPathSummary(null);
+        }
       } finally {
         if (!cancelled) setIsLoadingIntel(false);
       }
@@ -877,7 +869,6 @@ export function DirectorConsolePanel({
                           {currentCue.summary}
                         </Typography.Paragraph>
                         <div className="mt-3 flex flex-wrap gap-2">
-                          <ConsolePill>{workspaceLabel ?? "序列未初始化"}</ConsolePill>
                           <ConsolePill>{workspaceView === "clip" ? "剪辑台" : "对话主舞台"}</ConsolePill>
                           <ConsolePill>{sessionId ? "会话在线" : "待首条指令"}</ConsolePill>
                         </div>
@@ -994,38 +985,6 @@ export function DirectorConsolePanel({
                                 ) : null}
                               </div>
                             ) : null}
-                            {memorySummary && memorySummary.totalPreferenceItems > 0 ? (
-                              <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
-                                <Typography.Text strong style={{ fontSize: 13 }}>
-                                  长期偏好提醒
-                                </Typography.Text>
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  {memorySummary.preferredWorkflowPaths.slice(0, 2).map((item) => (
-                                    <ConsolePill key={item}>{item}</ConsolePill>
-                                  ))}
-                                  {memorySummary.preferredEditingHints.slice(0, 2).map((item) => (
-                                    <ConsolePill key={item}>{item}</ConsolePill>
-                                  ))}
-                                  {memorySummary.preferredStyleTokens.slice(0, 2).map((item) => (
-                                    <ConsolePill key={item}>{item}</ConsolePill>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                            <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <BgColorsOutlined className="text-[var(--af-brand)]" />
-                                <Typography.Text strong style={{ fontSize: 13 }}>
-                                  专业策略层在 Pro
-                                </Typography.Text>
-                              </div>
-                              <p className="mt-2 text-[12px] text-[var(--af-muted)]">
-                                这里只保留当下决策；长期知识、模板和记忆收束到 Pro，不再重复铺满监控面板。
-                              </p>
-                              <Button size="small" className="mt-2" onClick={() => setActiveTab("pro")}>
-                                打开 Pro
-                              </Button>
-                            </div>
                           </div>
                         </section>
                       </div>
