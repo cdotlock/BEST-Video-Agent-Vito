@@ -8,7 +8,7 @@ import {
   RightOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
-import { Button, Progress, Spin, Tabs, Typography } from "antd";
+import { Button, Progress, Spin, Typography } from "antd";
 import { fetchJson } from "@/app/components/client-utils";
 import { inferReferenceRole, type VideoReferenceRole } from "@/lib/video/reference-roles";
 import { ProSettingsPanel } from "./ProSettingsPanel";
@@ -656,6 +656,9 @@ export function DirectorConsolePanel({
   const topGap = gaps[0];
   const compactHint = topGap?.shortLabel ?? (insights.videoCount > 0 ? "可进粗剪" : "可继续推进");
   const compactStatus = sessionId ? "在线" : "待起步";
+  const activeTabHint = activeTab === "monitor"
+    ? "当前阶段、关键阻塞与下一动作"
+    : "长期策略、模板、知识与记忆";
   const panelId = useMemo(
     () => `director-island-${storageKey.replace(/[^a-zA-Z0-9_-]+/g, "-")}`,
     [storageKey],
@@ -816,26 +819,57 @@ export function DirectorConsolePanel({
           style={ISLAND_PANEL_STYLE}
         >
           <header className="border-b border-[rgba(229,221,210,0.92)] px-4 py-3 md:px-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Typography.Text strong style={{ fontSize: 18, color: "var(--af-text)" }}>
-                    导演台
-                  </Typography.Text>
-                  <ConsolePill tone="accent">
-                    {executionMode === "yolo" ? "YOLO 自动推进" : "Checkpoint 对齐优先"}
-                  </ConsolePill>
-                  <ConsolePill>{progress.currentStageLabel}</ConsolePill>
-                  <ConsolePill>{progress.percent}%</ConsolePill>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0 flex flex-wrap items-center gap-3">
+                <span
+                  aria-hidden="true"
+                  className="inline-flex h-[10px] w-[10px] shrink-0 rounded-full"
+                  style={statusDotStyle(tone)}
+                />
+                <div className="inline-flex rounded-full border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.86)] p-1">
+                  {[
+                    { key: "monitor", label: "导演台" },
+                    { key: "pro", label: "专业模式" },
+                  ].map((item) => {
+                    const selected = activeTab === item.key;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition ${
+                          selected ? "text-white shadow-sm" : "text-[var(--af-muted)] hover:text-[var(--af-text)]"
+                        }`}
+                        style={selected ? { background: "var(--af-brand)" } : undefined}
+                        onClick={() => setActiveTab(item.key as "monitor" | "pro")}
+                      >
+                        {item.label}
+                      </button>
+                    );
+                  })}
                 </div>
-                <Typography.Paragraph style={{ margin: "6px 0 0", color: "var(--af-muted)", fontSize: 12 }}>
-                  收起时只保留最重要状态；展开后只看当前阶段、关键阻塞和下一动作。
-                </Typography.Paragraph>
+                <div className="min-w-0 text-[12px] text-[var(--af-muted)]">
+                  {activeTabHint}
+                </div>
               </div>
-
-              <Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setIsOpen(false)}>
-                收起
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <ConsolePill tone="accent">
+                  {executionMode === "yolo" ? "YOLO 自动推进" : "Checkpoint 对齐优先"}
+                </ConsolePill>
+                {activeTab === "monitor" ? (
+                  <>
+                    <ConsolePill>{progress.currentStageLabel}</ConsolePill>
+                    <ConsolePill tone={topGap ? topGap.severity : "neutral"}>{compactHint}</ConsolePill>
+                  </>
+                ) : (
+                  <>
+                    <ConsolePill>{memoryUser || "default"}</ConsolePill>
+                    <ConsolePill>{progress.percent}%</ConsolePill>
+                  </>
+                )}
+                <Button type="text" size="small" icon={<CloseOutlined />} onClick={() => setIsOpen(false)}>
+                  收起
+                </Button>
+              </div>
             </div>
           </header>
 
@@ -843,170 +877,153 @@ export function DirectorConsolePanel({
             className="overflow-y-auto px-4 py-4 md:px-5"
             style={{ maxHeight: "calc(min(38rem, calc(100dvh - 220px)) - 74px)" }}
           >
-            <Tabs
-              size="small"
-              activeKey={activeTab}
-              onChange={(value) => {
-                if (value === "monitor" || value === "pro") {
-                  setActiveTab(value);
-                }
-              }}
-              items={[
-                {
-                  key: "monitor",
-                  label: "导演台",
-                  children: (
-                    <div className="space-y-3">
-                      <section className="rounded-[26px] p-4" style={ISLAND_CARD_STYLE}>
-                        <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                          <FireOutlined />
-                          <span>Now</span>
-                        </div>
-                        <Typography.Text strong style={{ display: "block", marginTop: 10, fontSize: 20 }}>
-                          {currentCue.title}
-                        </Typography.Text>
-                        <Typography.Paragraph style={{ margin: "10px 0 0", color: "var(--af-muted)", fontSize: 13 }}>
-                          {currentCue.summary}
-                        </Typography.Paragraph>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <ConsolePill>{workspaceView === "clip" ? "剪辑台" : "对话主舞台"}</ConsolePill>
-                          <ConsolePill>{sessionId ? "会话在线" : "待首条指令"}</ConsolePill>
-                        </div>
-                        <div className="mt-4 grid gap-2 sm:grid-cols-4">
-                          <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
-                            <span className="block text-[11px] text-[var(--af-muted)]">阶段</span>
-                            <strong className="mt-1 block text-sm text-[var(--af-text)]">{progress.currentStageLabel}</strong>
-                          </div>
-                          <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
-                            <span className="block text-[11px] text-[var(--af-muted)]">素材</span>
-                            <strong className="mt-1 block text-sm text-[var(--af-text)]">{insights.totalAssets}</strong>
-                          </div>
-                          <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
-                            <span className="block text-[11px] text-[var(--af-muted)]">锚点覆盖</span>
-                            <strong className="mt-1 block text-sm text-[var(--af-text)]">
-                              {insights.anchorCoverage}/{REFERENCE_ROLES.length}
-                            </strong>
-                          </div>
-                          <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
-                            <span className="block text-[11px] text-[var(--af-muted)]">候选视频</span>
-                            <strong className="mt-1 block text-sm text-[var(--af-text)]">{insights.videoCount}</strong>
-                          </div>
-                        </div>
-                        <Progress
-                          percent={progress.percent}
-                          showInfo={false}
-                          strokeColor="#2f6b5f"
-                          railColor="rgba(229,221,210,0.92)"
-                          className="mt-4"
-                        />
-                        <div className="mt-2 text-[12px] text-[var(--af-muted)]">{progress.summary}</div>
-                      </section>
-
-                      <div className="grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
-                        <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
-                          <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                            <ThunderboltOutlined />
-                            <span>Blocking Gaps</span>
-                          </div>
-                          {gaps.length === 0 ? (
-                            <div className="mt-3 rounded-[18px] border p-4" style={pillStyle("accent")}>
-                              <Typography.Text strong style={{ fontSize: 13 }}>当前没有关键阻塞</Typography.Text>
-                              <Typography.Paragraph style={{ margin: "8px 0 0", color: "var(--af-muted)", fontSize: 12 }}>
-                                信息已经足够，可以继续推进生成，或直接转去时间线收口。
-                              </Typography.Paragraph>
-                            </div>
-                          ) : (
-                            <div className="mt-3 space-y-3">
-                              {gaps.slice(0, 3).map((gap) => (
-                                <div
-                                  key={gap.id}
-                                  className="rounded-[18px] border px-3 py-3"
-                                  style={gap.severity === "critical"
-                                    ? pillStyle("critical")
-                                    : gap.severity === "warn"
-                                      ? pillStyle("warn")
-                                      : pillStyle("neutral")}
-                                >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <ConsolePill tone={gap.severity}>{gap.label}</ConsolePill>
-                                      <Typography.Paragraph style={{ margin: "8px 0 0", fontSize: 12, color: "var(--af-muted)" }}>
-                                        {gap.detail}
-                                      </Typography.Paragraph>
-                                    </div>
-                                    <Button size="small" onClick={() => runAction({
-                                      key: gap.id,
-                                      title: gap.actionLabel,
-                                      description: gap.detail,
-                                      kind: gap.actionKind,
-                                      prompt: gap.prompt,
-                                    })}>
-                                      {gap.actionLabel}
-                                    </Button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </section>
-
-                        <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
-                          <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
-                            <RightOutlined />
-                            <span>Next Actions</span>
-                          </div>
-                          <div className="mt-3 grid gap-2 md:grid-cols-2">
-                            {actionDeck.map((action) => (
-                              <button
-                                key={action.key}
-                                type="button"
-                                className="director-action-button"
-                                onClick={() => runAction(action)}
-                              >
-                                <span className="text-[14px] font-semibold">{action.title}</span>
-                                <span className="text-[12px] text-[var(--af-muted)]">{action.description}</span>
-                              </button>
-                            ))}
-                          </div>
-                          <div className="mt-3 space-y-3">
-                            {isLoadingIntel ? (
-                              <div className="flex min-h-[72px] items-center justify-center">
-                                <Spin size="small" />
-                              </div>
-                            ) : pathSummary?.recommendations[0] ? (
-                              <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
-                                <Typography.Text strong style={{ fontSize: 13 }}>
-                                  当前更优路径：{pathSummary.recommendations[0].title}
-                                </Typography.Text>
-                                {pathSummary.recommendations[0].why[0] ? (
-                                  <p className="mt-2 text-[12px] text-[var(--af-muted)]">
-                                    {pathSummary.recommendations[0].why[0]}
-                                  </p>
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </div>
-                        </section>
-                      </div>
+            {activeTab === "monitor" ? (
+              <div className="space-y-3">
+                <section className="rounded-[26px] p-4" style={ISLAND_CARD_STYLE}>
+                  <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                    <FireOutlined />
+                    <span>Now</span>
+                  </div>
+                  <Typography.Text strong style={{ display: "block", marginTop: 10, fontSize: 20 }}>
+                    {currentCue.title}
+                  </Typography.Text>
+                  <Typography.Paragraph style={{ margin: "10px 0 0", color: "var(--af-muted)", fontSize: 13 }}>
+                    {currentCue.summary}
+                  </Typography.Paragraph>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <ConsolePill>{workspaceView === "clip" ? "剪辑台" : "对话主舞台"}</ConsolePill>
+                    <ConsolePill>{sessionId ? "会话在线" : "待首条指令"}</ConsolePill>
+                  </div>
+                  <div className="mt-4 grid gap-2 sm:grid-cols-4">
+                    <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
+                      <span className="block text-[11px] text-[var(--af-muted)]">阶段</span>
+                      <strong className="mt-1 block text-sm text-[var(--af-text)]">{progress.currentStageLabel}</strong>
                     </div>
-                  ),
-                },
-                {
-                  key: "pro",
-                  label: "专业模式",
-                  children: (
-                    <ProSettingsPanel
-                      active={isOpen && activeTab === "pro"}
-                      memoryUser={memoryUser}
-                      config={proConfig}
-                      capabilitySkills={capabilitySkills}
-                      capabilityMcps={capabilityMcps}
-                      onApply={onApplyPro}
-                    />
-                  ),
-                },
-              ]}
-            />
+                    <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
+                      <span className="block text-[11px] text-[var(--af-muted)]">素材</span>
+                      <strong className="mt-1 block text-sm text-[var(--af-text)]">{insights.totalAssets}</strong>
+                    </div>
+                    <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
+                      <span className="block text-[11px] text-[var(--af-muted)]">锚点覆盖</span>
+                      <strong className="mt-1 block text-sm text-[var(--af-text)]">
+                        {insights.anchorCoverage}/{REFERENCE_ROLES.length}
+                      </strong>
+                    </div>
+                    <div className="rounded-[16px] border p-3" style={pillStyle("neutral")}>
+                      <span className="block text-[11px] text-[var(--af-muted)]">候选视频</span>
+                      <strong className="mt-1 block text-sm text-[var(--af-text)]">{insights.videoCount}</strong>
+                    </div>
+                  </div>
+                  <Progress
+                    percent={progress.percent}
+                    showInfo={false}
+                    strokeColor="#2f6b5f"
+                    railColor="rgba(229,221,210,0.92)"
+                    className="mt-4"
+                  />
+                  <div className="mt-2 text-[12px] text-[var(--af-muted)]">{progress.summary}</div>
+                </section>
+
+                <div className="grid gap-3 xl:grid-cols-[1.05fr_0.95fr]">
+                  <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                    <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                      <ThunderboltOutlined />
+                      <span>Blocking Gaps</span>
+                    </div>
+                    {gaps.length === 0 ? (
+                      <div className="mt-3 rounded-[18px] border p-4" style={pillStyle("accent")}>
+                        <Typography.Text strong style={{ fontSize: 13 }}>当前没有关键阻塞</Typography.Text>
+                        <Typography.Paragraph style={{ margin: "8px 0 0", color: "var(--af-muted)", fontSize: 12 }}>
+                          信息已经足够，可以继续推进生成，或直接转去时间线收口。
+                        </Typography.Paragraph>
+                      </div>
+                    ) : (
+                      <div className="mt-3 space-y-3">
+                        {gaps.slice(0, 3).map((gap) => (
+                          <div
+                            key={gap.id}
+                            className="rounded-[18px] border px-3 py-3"
+                            style={gap.severity === "critical"
+                              ? pillStyle("critical")
+                              : gap.severity === "warn"
+                                ? pillStyle("warn")
+                                : pillStyle("neutral")}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <ConsolePill tone={gap.severity}>{gap.label}</ConsolePill>
+                                <Typography.Paragraph style={{ margin: "8px 0 0", fontSize: 12, color: "var(--af-muted)" }}>
+                                  {gap.detail}
+                                </Typography.Paragraph>
+                              </div>
+                              <Button
+                                size="small"
+                                onClick={() => runAction({
+                                  key: gap.id,
+                                  title: gap.actionLabel,
+                                  description: gap.detail,
+                                  kind: gap.actionKind,
+                                  prompt: gap.prompt,
+                                })}
+                              >
+                                {gap.actionLabel}
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="rounded-[24px] p-4" style={ISLAND_CARD_STYLE}>
+                    <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">
+                      <RightOutlined />
+                      <span>Next Actions</span>
+                    </div>
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
+                      {actionDeck.map((action) => (
+                        <button
+                          key={action.key}
+                          type="button"
+                          className="director-action-button"
+                          onClick={() => runAction(action)}
+                        >
+                          <span className="text-[14px] font-semibold">{action.title}</span>
+                          <span className="text-[12px] text-[var(--af-muted)]">{action.description}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-3 space-y-3">
+                      {isLoadingIntel ? (
+                        <div className="flex min-h-[72px] items-center justify-center">
+                          <Spin size="small" />
+                        </div>
+                      ) : pathSummary?.recommendations[0] ? (
+                        <div className="rounded-[18px] border p-3" style={pillStyle("neutral")}>
+                          <Typography.Text strong style={{ fontSize: 13 }}>
+                            当前更优路径：{pathSummary.recommendations[0].title}
+                          </Typography.Text>
+                          {pathSummary.recommendations[0].why[0] ? (
+                            <p className="mt-2 text-[12px] text-[var(--af-muted)]">
+                              {pathSummary.recommendations[0].why[0]}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  </section>
+                </div>
+              </div>
+            ) : (
+              <ProSettingsPanel
+                active={isOpen && activeTab === "pro"}
+                memoryUser={memoryUser}
+                config={proConfig}
+                capabilitySkills={capabilitySkills}
+                capabilityMcps={capabilityMcps}
+                onApply={onApplyPro}
+              />
+            )}
           </div>
         </section>
       </div>

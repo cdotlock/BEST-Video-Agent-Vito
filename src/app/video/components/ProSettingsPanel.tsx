@@ -285,6 +285,19 @@ function workflowSnippetForPath(pathId: string): string {
   }
 }
 
+function storyboardDensityLabel(value: StoryboardDensityPreset): string {
+  if (value === "grid_3x3") return "九宫格探索";
+  if (value === "grid_2x2") return "四宫格探索";
+  return "单张确认";
+}
+
+function referenceRouteLabel(value: ReferenceRoutePreset): string {
+  if (value === "first_last_frame") return "首尾帧";
+  if (value === "first_frame") return "首帧";
+  if (value === "mixed_refs") return "Mixed Refs";
+  return "自动路线";
+}
+
 export function ProSettingsPanel({
   active = true,
   memoryUser,
@@ -471,6 +484,19 @@ export function ProSettingsPanel({
     void message.success("推荐路径已叠加到模板");
   };
 
+  const strategySummary = (
+    <div className="flex flex-wrap gap-2">
+      <Tag color="blue">{storyboardDensityLabel(atelier.storyboardDensity)}</Tag>
+      <Tag color="gold">{referenceRouteLabel(atelier.referenceRoute)}</Tag>
+      {atelier.characterPriority ? <Tag>角色优先</Tag> : null}
+      {atelier.emptyShotPriority ? <Tag>空镜优先</Tag> : null}
+      {atelier.dialogueFirst ? <Tag>对白优先</Tag> : null}
+      {atelier.multiClip ? <Tag>多候选粗剪</Tag> : null}
+      {atelier.checkpointAlignmentRequired ? <Tag color="green">Checkpoint</Tag> : <Tag>直接推进</Tag>}
+      {atelier.enableSelfReview ? <Tag color="purple">阶段性评审</Tag> : null}
+    </div>
+  );
+
   const tabs = (
     <Tabs
       size="small"
@@ -482,11 +508,9 @@ export function ProSettingsPanel({
           label: "Strategy",
           children: (
             <div className="space-y-3">
-              <Alert
-                showIcon
-                type="success"
-                title="先把这轮导演策略定下来：路线、探索密度、review gate 都在这里一次定清。"
-              />
+              <div className="rounded-[18px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.74)] px-4 py-3 text-[12px] text-[var(--af-muted)]">
+                先把这一轮策略定清：探索密度、参考路线和 review gate 在这里一次收口。
+              </div>
               <Card size="small" className="!rounded-[18px]">
                 <Typography.Text strong>Quick Setups</Typography.Text>
                 <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -501,41 +525,6 @@ export function ProSettingsPanel({
                       </Button>
                     </div>
                   ))}
-                </div>
-              </Card>
-
-              <Card size="small" className="!rounded-[18px]">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <Typography.Text strong>Current Strategy</Typography.Text>
-                  <Space size={8}>
-                    <Button size="small" onClick={() => applyAtelierTemplate("append")}>
-                      叠加到模板
-                    </Button>
-                    <Button size="small" type="primary" onClick={() => applyAtelierTemplate("replace")}>
-                      覆盖模板
-                    </Button>
-                    <Button size="small" onClick={applyAtelierKnowledge}>
-                      写入知识
-                    </Button>
-                  </Space>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Tag color="blue">{atelier.storyboardDensity === "grid_3x3" ? "九宫格探索" : atelier.storyboardDensity === "grid_2x2" ? "四宫格探索" : "单张确认"}</Tag>
-                  <Tag color="gold">
-                    {atelier.referenceRoute === "first_last_frame"
-                      ? "首尾帧"
-                      : atelier.referenceRoute === "first_frame"
-                        ? "首帧"
-                        : atelier.referenceRoute === "mixed_refs"
-                          ? "mixed refs"
-                          : "自动路线"}
-                  </Tag>
-                  {atelier.characterPriority ? <Tag>角色优先</Tag> : null}
-                  {atelier.emptyShotPriority ? <Tag>空镜优先</Tag> : null}
-                  {atelier.dialogueFirst ? <Tag>对白优先</Tag> : null}
-                  {atelier.multiClip ? <Tag>多候选粗剪</Tag> : null}
-                  {atelier.checkpointAlignmentRequired ? <Tag color="green">Checkpoint</Tag> : <Tag>直接推进</Tag>}
-                  {atelier.enableSelfReview ? <Tag color="purple">阶段性评审</Tag> : null}
                 </div>
               </Card>
 
@@ -610,14 +599,24 @@ export function ProSettingsPanel({
                 <Card size="small" className="!rounded-[18px]">
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-3">
-                      <Typography.Text strong>Checkpoint 首轮对齐</Typography.Text>
+                      <div>
+                        <Typography.Text strong>Checkpoint 首轮对齐</Typography.Text>
+                        <div className="mt-1 text-[12px] text-[var(--af-muted)]">
+                          先确认画风、目标和工作流，再进入关键生成。
+                        </div>
+                      </div>
                       <Switch
                         checked={atelier.checkpointAlignmentRequired}
                         onChange={(checked) => setAtelier((prev) => ({ ...prev, checkpointAlignmentRequired: checked }))}
                       />
                     </div>
                     <div className="flex items-center justify-between gap-3">
-                      <Typography.Text strong>阶段性自评审</Typography.Text>
+                      <div>
+                        <Typography.Text strong>阶段性自评审</Typography.Text>
+                        <div className="mt-1 text-[12px] text-[var(--af-muted)]">
+                          关键阶段后判断是否要换路径、补素材或补对白。
+                        </div>
+                      </div>
                       <Switch
                         checked={atelier.enableSelfReview}
                         onChange={(checked) => setAtelier((prev) => ({ ...prev, enableSelfReview: checked }))}
@@ -660,38 +659,6 @@ export function ProSettingsPanel({
                     ))}
                   </div>
                 )}
-              </Card>
-              <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>Review Gate</Typography.Text>
-                <Typography.Paragraph style={{ marginTop: 8, marginBottom: 12, fontSize: 12, color: "var(--af-muted)" }}>
-                  这里控制的是是否在关键节点停下来检查，而不是给 Agent 额外增加表单负担。
-                </Typography.Paragraph>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <Typography.Text strong>Checkpoint 首轮对齐</Typography.Text>
-                      <div className="mt-1 text-[12px] text-[var(--af-muted)]">
-                        先确认画风、工作流、分镜密度和最终交付目标，再正式执行。
-                      </div>
-                    </div>
-                    <Switch
-                      checked={draftConfig.checkpointAlignmentRequired}
-                      onChange={(checked) => setDraftConfig((prev) => ({ ...prev, checkpointAlignmentRequired: checked }))}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <Typography.Text strong>阶段性自评审</Typography.Text>
-                      <div className="mt-1 text-[12px] text-[var(--af-muted)]">
-                        关键阶段后让 Agent 自查是否要换路径、补素材、补台词或提高分镜密度。
-                      </div>
-                    </div>
-                    <Switch
-                      checked={draftConfig.enableSelfReview}
-                      onChange={(checked) => setDraftConfig((prev) => ({ ...prev, enableSelfReview: checked }))}
-                    />
-                  </div>
-                </div>
               </Card>
             </div>
           ),
@@ -848,28 +815,6 @@ export function ProSettingsPanel({
                   </div>
                 )}
               </Card>
-              <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>路径推荐</Typography.Text>
-                {isLoadingPaths ? (
-                  <div className="flex items-center justify-center py-6"><Spin size="small" /></div>
-                ) : !pathSummary || pathSummary.recommendations.length === 0 ? (
-                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无路径推荐" />
-                ) : (
-                  <div className="mt-3 space-y-2">
-                    {pathSummary.recommendations.slice(0, 3).map((item) => (
-                      <div key={item.pathId} className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] px-3 py-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <Typography.Text strong>{item.title}</Typography.Text>
-                          <Tag color="blue">{item.score.toFixed(2)}</Tag>
-                        </div>
-                        <div className="mt-1 text-[12px] text-[var(--af-muted)]">
-                          {item.why.join("；")}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Card>
             </div>
           ),
         },
@@ -916,35 +861,37 @@ export function ProSettingsPanel({
     />
   );
 
-  const actionBar = (
-    <div className="flex flex-wrap items-center justify-end gap-2">
-      {onClose ? <Button onClick={onClose}>收起</Button> : null}
-      <Button type="primary" onClick={handleApply}>保存专业模式</Button>
+  const topBar = (
+    <div className="flex flex-wrap items-start justify-between gap-3 rounded-[20px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.78)] px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">当前策略</div>
+        <div className="mt-2">{strategySummary}</div>
+      </div>
+      <Space size={8}>
+        <Button size="small" onClick={() => applyAtelierTemplate("append")}>
+          叠加到模板
+        </Button>
+        <Button size="small" onClick={applyAtelierKnowledge}>
+          写入知识
+        </Button>
+        {onClose ? <Button size="small" onClick={onClose}>收起</Button> : null}
+        <Button size="small" type="primary" onClick={handleApply}>保存专业模式</Button>
+      </Space>
     </div>
   );
 
   if (layout === "drawer") {
     return (
       <div className="space-y-4">
+        {topBar}
         {tabs}
-        {actionBar}
       </div>
     );
   }
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <Typography.Text strong style={{ fontSize: 15, color: "var(--af-text)" }}>
-            专业模式
-          </Typography.Text>
-          <div className="mt-1 text-[12px] text-[var(--af-muted)]">
-            这里维护导演策略、长期知识、记忆与能力叠层。
-          </div>
-        </div>
-        <Space>{actionBar}</Space>
-      </div>
+      {topBar}
       {tabs}
     </div>
   );
