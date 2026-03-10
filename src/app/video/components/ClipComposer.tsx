@@ -969,12 +969,12 @@ function SortableClipBlockBase({
   const compact = width < 152;
   const tiny = width < 96;
   const showFrameThumbnail = width >= 168;
-  const transitionTintWidth = transitionOverlapSec > 0
+  const transitionLeadWidth = transitionOverlapSec > 0
     ? Math.max(
       0,
       Math.min(
-        Math.max(width - 8, 0),
-        Math.max(10, width * (transitionOverlapSec / Math.max(clipDuration, 0.001))),
+        Math.max(width - 12, 0),
+        width * (transitionOverlapSec / Math.max(clipDuration, 0.001)),
       ),
     )
     : 0;
@@ -984,11 +984,7 @@ function SortableClipBlockBase({
       ref={setNodeRef}
       style={style}
       tabIndex={0}
-      className={`group relative flex h-[72px] overflow-hidden rounded-[12px] border ${
-        active
-          ? "border-[rgba(47,107,95,0.36)] bg-[rgba(255,255,255,0.98)] shadow-[inset_0_0_0_1px_rgba(47,107,95,0.08)]"
-          : "border-[rgba(180,170,158,0.28)] bg-[rgba(255,253,249,0.96)]"
-      } ${playing ? "shadow-[inset_0_0_0_1px_rgba(47,107,95,0.22)]" : ""} select-none`}
+      className="group relative h-[72px] select-none"
       onClick={() => onSelect(clip.id)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -997,13 +993,21 @@ function SortableClipBlockBase({
         }
       }}
     >
-      {transitionOverlapSec > 0 ? (
+      {transitionLeadWidth > 0 ? (
         <div
-          className="pointer-events-none absolute inset-y-0 left-0 z-[1] rounded-l-[12px] bg-[linear-gradient(90deg,rgba(47,107,95,0.14),rgba(47,107,95,0.03))]"
+          className="pointer-events-none absolute inset-y-1 left-0 z-[1]"
           style={{
-            width: `${transitionTintWidth}px`,
+            width: transitionLeadWidth,
           }}
-        />
+        >
+          <div className="absolute inset-y-1 left-0 w-[3px] rounded-full bg-[rgba(47,107,95,0.22)]" />
+          <div className="absolute inset-x-1 right-2 top-1/2 h-px -translate-y-1/2 rounded-full bg-[linear-gradient(90deg,rgba(47,107,95,0.26),rgba(47,107,95,0.08))]" />
+          {transitionLeadWidth >= 44 && !ultraTiny ? (
+            <div className="absolute left-1 top-1/2 max-w-[calc(100%-10px)] -translate-y-1/2 truncate rounded-full border border-[rgba(47,107,95,0.14)] bg-[rgba(255,255,255,0.88)] px-1.5 py-0.5 text-[8px] uppercase tracking-[0.08em] text-[var(--af-muted)]">
+              {transitionLabel(clip.transition)}
+            </div>
+          ) : null}
+        </div>
       ) : null}
       <button
         type="button"
@@ -1023,106 +1027,115 @@ function SortableClipBlockBase({
         onMouseDown={(event) => onTrimMouseDown(clip.id, "end", event)}
         onClick={(event) => event.stopPropagation()}
       />
-      <div className={`w-1.5 shrink-0 ${active ? "bg-[var(--af-brand)]" : timelineClipToneClass(clip.transition)}`} />
-      <div className={`relative z-[2] flex min-w-0 flex-1 flex-col ${ultraTiny ? "px-1.5 py-1.5" : "px-2.5 py-2"}`}>
-        <div className={`flex min-w-0 items-center ${ultraTiny ? "gap-1" : "gap-1.5"}`}>
-          <button
-            type="button"
-            aria-label={`${clip.title} 拖拽排序`}
-            className={`flex shrink-0 items-center justify-center rounded-full border text-[var(--af-muted)] touch-none ${
-              ultraTiny ? "h-4 w-4" : "h-5 w-5"
-            } ${
-              active
-                ? "border-[rgba(47,107,95,0.2)] bg-[rgba(47,107,95,0.08)]"
-                : "border-[rgba(180,170,158,0.24)] bg-white/82"
-            } ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
-            onMouseDown={(event) => {
-              event.stopPropagation();
-              onSelect(clip.id);
-            }}
-            onClick={(event) => event.stopPropagation()}
-            {...attributes}
-            {...listeners}
-          >
-            <HolderOutlined className="text-[10px]" />
-          </button>
-          {showFrameThumbnail ? (
-            <ClipFrameThumbnail
-              key={clip.url ? clipFrameThumbnailKey(clip.url, clip.inSec) : `${clip.id}-thumb`}
-              url={clip.url}
-              inSec={clip.inSec}
-              title={clip.title}
-              compact={compact}
-              active={active}
-            />
-          ) : null}
-          <div className="min-w-0 flex-1">
-            <div className={`truncate font-medium text-[var(--af-text)] ${ultraTiny ? "text-[9px]" : "text-[11px]"}`}>
-              {tiny ? `${index + 1}. ${clipDuration.toFixed(1)}s` : `${index + 1}. ${clip.title}`}
-            </div>
-          </div>
-          {!tiny && !ultraTiny ? (
-            <div className="shrink-0 text-[10px] text-[var(--af-muted)]">
-              {clipDuration.toFixed(2)}s
-            </div>
-          ) : null}
-          {!ultraTiny ? (
-            <Button
-              size="small"
-              type="text"
-              danger
-              icon={<DeleteOutlined />}
-              className={`${active ? "" : "opacity-0 group-hover:opacity-100"} !h-6 !w-6 !min-w-6`}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
+      <div
+        className={`absolute inset-y-0 right-0 z-[2] flex overflow-hidden rounded-[12px] border ${
+          active
+            ? "border-[rgba(47,107,95,0.36)] bg-[rgba(255,255,255,0.98)] shadow-[inset_0_0_0_1px_rgba(47,107,95,0.08)]"
+            : "border-[rgba(180,170,158,0.28)] bg-[rgba(255,253,249,0.96)]"
+        } ${playing ? "shadow-[inset_0_0_0_1px_rgba(47,107,95,0.22)]" : ""}`}
+        style={{ left: transitionLeadWidth }}
+      >
+        <div className={`w-1.5 shrink-0 ${active ? "bg-[var(--af-brand)]" : timelineClipToneClass(clip.transition)}`} />
+        <div className={`relative flex min-w-0 flex-1 flex-col ${ultraTiny ? "px-1.5 py-1.5" : "px-2.5 py-2"}`}>
+          <div className={`flex min-w-0 items-center ${ultraTiny ? "gap-1" : "gap-1.5"}`}>
+            <button
+              type="button"
+              aria-label={`${clip.title} 拖拽排序`}
+              className={`flex shrink-0 items-center justify-center rounded-full border text-[var(--af-muted)] touch-none ${
+                ultraTiny ? "h-4 w-4" : "h-5 w-5"
+              } ${
+                active
+                  ? "border-[rgba(47,107,95,0.2)] bg-[rgba(47,107,95,0.08)]"
+                  : "border-[rgba(180,170,158,0.24)] bg-white/82"
+              } ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
+              onMouseDown={(event) => {
                 event.stopPropagation();
-                onDelete(clip.id);
+                onSelect(clip.id);
               }}
-            />
-          ) : null}
-        </div>
-        {ultraTiny ? null : tiny ? (
-          <div className="mt-auto flex items-center gap-1.5 text-[9px] text-[var(--af-muted)]">
-            <span>{transitionLabel(clip.transition)}</span>
-            {transitionOverlapSec > 0 ? <span>-{transitionOverlapSec.toFixed(2)}s</span> : null}
-          </div>
-        ) : (
-          <>
-            <div className="mt-1 flex items-center gap-1.5 text-[9px] text-[var(--af-muted)]">
-              <span>{transitionLabel(clip.transition)}</span>
-              {transitionOverlapSec > 0 ? <span>Overlap {transitionOverlapSec.toFixed(2)}s</span> : null}
-              {!compact ? (
-                <span className="truncate">
-                  TL {formatTimelineTime(timelineStartSec)} - {formatTimelineTime(timelineEndSec)}
-                </span>
-              ) : null}
+              onClick={(event) => event.stopPropagation()}
+              {...attributes}
+              {...listeners}
+            >
+              <HolderOutlined className="text-[10px]" />
+            </button>
+            {showFrameThumbnail ? (
+              <ClipFrameThumbnail
+                key={clip.url ? clipFrameThumbnailKey(clip.url, clip.inSec) : `${clip.id}-thumb`}
+                url={clip.url}
+                inSec={clip.inSec}
+                title={clip.title}
+                compact={compact}
+                active={active}
+              />
+            ) : null}
+            <div className="min-w-0 flex-1">
+              <div className={`truncate font-medium text-[var(--af-text)] ${ultraTiny ? "text-[9px]" : "text-[11px]"}`}>
+                {tiny ? `${index + 1}. ${clipDuration.toFixed(1)}s` : `${index + 1}. ${clip.title}`}
+              </div>
             </div>
-            {clip.sourceDurationSec && !compact ? (
-              <div className="mt-auto">
-                <div className="h-1 rounded-full bg-[rgba(214,222,226,0.44)]">
-                  <div
-                    className="h-full rounded-full bg-[rgba(47,107,95,0.56)]"
-                    style={{
-                      marginLeft: `${(clip.inSec / clip.sourceDurationSec) * 100}%`,
-                      width: `${Math.max((clipDuration / clip.sourceDurationSec) * 100, 6)}%`,
-                    }}
-                  />
-                </div>
-                <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-[var(--af-muted)]">
-                  <span>{clip.inSec.toFixed(2)}s</span>
-                  <span>{clip.audioEnabled ? `${clip.audioVolume}%` : "静音"}</span>
-                  <span>{clip.outSec.toFixed(2)}s</span>
-                </div>
+            {!tiny && !ultraTiny ? (
+              <div className="shrink-0 text-[10px] text-[var(--af-muted)]">
+                {clipDuration.toFixed(2)}s
               </div>
-            ) : (
-              <div className="mt-auto text-[9px] text-[var(--af-muted)]">
-                {clip.sourceDurationSec
-                  ? `TL ${formatTimelineTime(timelineStartSec)} - ${formatTimelineTime(timelineEndSec)}`
-                  : "源时长读取中…"}
+            ) : null}
+            {!ultraTiny ? (
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                className={`${active ? "" : "opacity-0 group-hover:opacity-100"} !h-6 !w-6 !min-w-6`}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete(clip.id);
+                }}
+              />
+            ) : null}
+          </div>
+          {ultraTiny ? null : tiny ? (
+            <div className="mt-auto flex items-center gap-1.5 text-[9px] text-[var(--af-muted)]">
+              <span>{transitionLabel(clip.transition)}</span>
+              {transitionOverlapSec > 0 ? <span>-{transitionOverlapSec.toFixed(2)}s</span> : null}
+            </div>
+          ) : (
+            <>
+              <div className="mt-1 flex items-center gap-1.5 text-[9px] text-[var(--af-muted)]">
+                <span>{transitionLabel(clip.transition)}</span>
+                {transitionOverlapSec > 0 ? <span>Overlap {transitionOverlapSec.toFixed(2)}s</span> : null}
+                {!compact ? (
+                  <span className="truncate">
+                    TL {formatTimelineTime(timelineStartSec)} - {formatTimelineTime(timelineEndSec)}
+                  </span>
+                ) : null}
               </div>
-            )}
-          </>
-        )}
+              {clip.sourceDurationSec && !compact ? (
+                <div className="mt-auto">
+                  <div className="h-1 rounded-full bg-[rgba(214,222,226,0.44)]">
+                    <div
+                      className="h-full rounded-full bg-[rgba(47,107,95,0.56)]"
+                      style={{
+                        marginLeft: `${(clip.inSec / clip.sourceDurationSec) * 100}%`,
+                        width: `${Math.max((clipDuration / clip.sourceDurationSec) * 100, 6)}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-[var(--af-muted)]">
+                    <span>{clip.inSec.toFixed(2)}s</span>
+                    <span>{clip.audioEnabled ? `${clip.audioVolume}%` : "静音"}</span>
+                    <span>{clip.outSec.toFixed(2)}s</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-auto text-[9px] text-[var(--af-muted)]">
+                  {clip.sourceDurationSec
+                    ? `TL ${formatTimelineTime(timelineStartSec)} - ${formatTimelineTime(timelineEndSec)}`
+                    : "源时长读取中…"}
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -3726,116 +3739,90 @@ export function ClipComposer({
                     播放
                   </Button>
                 )}
-                <div className="hidden items-center gap-2 text-[10px] text-[var(--af-muted)] md:flex">
-                  <span>{currentDocument.clips.length} clips / {currentDocument.audioTracks.length} audio</span>
-                  <span className="h-3.5 w-px bg-[rgba(229,221,210,0.92)]" />
-                  <span>{fitTimelineToView ? "适配视图" : `1s = ${timelinePixelsPerSecond.toFixed(1)}px`}</span>
-                </div>
               </div>
             </div>
             <div className="rounded-[14px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.82)] px-2 py-1.5">
-              <div className="flex flex-wrap items-center gap-1">
-                <Tooltip title="撤销">
-                  <Button size="small" icon={<UndoOutlined />} disabled={editor.historyIndex === 0} onClick={handleUndo} />
-                </Tooltip>
-                <Tooltip title="重做">
-                  <Button
-                    size="small"
-                    icon={<RedoOutlined />}
-                    disabled={editor.historyIndex >= editor.history.length - 1}
-                    onClick={handleRedo}
-                  />
-                </Tooltip>
-                <Tooltip title="复制片段">
-                  <Button
-                    size="small"
-                    icon={<CopyOutlined />}
-                    disabled={!selectedClip}
-                    onClick={duplicateSelectedClip}
-                  />
-                </Tooltip>
-                <Tooltip title="播放头切割">
-                  <Button size="small" icon={<ScissorOutlined />} disabled={!playheadSegment} onClick={splitClipAtPlayhead} />
-                </Tooltip>
-                <Tooltip title="波纹删除">
-                  <Button
-                    size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    disabled={!selectedClip}
-                    onClick={handleRippleDelete}
-                  />
-                </Tooltip>
-                <span className="mx-0.5 h-5 w-px shrink-0 bg-[rgba(229,221,210,0.92)]" />
-                <Button
-                  size="small"
-                  type={fitTimelineToView ? "primary" : "default"}
-                  onClick={toggleFitTimelineToView}
-                >
-                  适配
-                </Button>
-                <div className="inline-flex min-w-[176px] flex-1 items-center gap-1.5 rounded-full border border-[rgba(229,221,210,0.88)] bg-white px-2 py-0.5">
-                  <Tooltip title="缩小">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-1">
+                  <Tooltip title="撤销">
+                    <Button size="small" icon={<UndoOutlined />} disabled={editor.historyIndex === 0} onClick={handleUndo} />
+                  </Tooltip>
+                  <Tooltip title="重做">
                     <Button
                       size="small"
-                      type="text"
-                      icon={<MinusOutlined />}
-                      onClick={() => adjustTimelineZoom(-TIMELINE_ZOOM_STEP, { anchorSec: timelinePlayheadSec })}
+                      icon={<RedoOutlined />}
+                      disabled={editor.historyIndex >= editor.history.length - 1}
+                      onClick={handleRedo}
                     />
                   </Tooltip>
-                  <Slider
-                    min={MIN_TIMELINE_ZOOM}
-                    max={MAX_TIMELINE_ZOOM}
-                    step={TIMELINE_ZOOM_STEP}
-                    value={displayedTimelineZoom}
-                    tooltip={{ open: false }}
-                    className="min-w-[72px] flex-1"
-                    onChange={(value) => {
-                      if (Array.isArray(value)) return;
-                      handleTimelineZoomSliderChange(value);
-                    }}
-                  />
-                  <span className="min-w-[42px] text-center text-[10px] text-[var(--af-text)]">
-                    {timelineZoomLabel}
-                  </span>
-                  <Tooltip title="放大">
+                  <Tooltip title="复制片段">
                     <Button
                       size="small"
-                      type="text"
-                      icon={<PlusOutlined />}
-                      onClick={() => adjustTimelineZoom(TIMELINE_ZOOM_STEP, { anchorSec: timelinePlayheadSec })}
+                      icon={<CopyOutlined />}
+                      disabled={!selectedClip}
+                      onClick={duplicateSelectedClip}
+                    />
+                  </Tooltip>
+                  <Tooltip title="播放头切割">
+                    <Button size="small" icon={<ScissorOutlined />} disabled={!playheadSegment} onClick={splitClipAtPlayhead} />
+                  </Tooltip>
+                  <Tooltip title="波纹删除">
+                    <Button
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      disabled={!selectedClip}
+                      onClick={handleRippleDelete}
                     />
                   </Tooltip>
                 </div>
-                <div className="inline-flex items-center gap-1 rounded-full border border-[rgba(229,221,210,0.88)] bg-white px-2 py-0.5">
-                  <span className="text-[10px] uppercase tracking-[0.14em] text-[var(--af-muted)]">Snap</span>
-                  <Switch
-                    size="small"
-                    checked={currentDocument.snapEnabled}
-                    onChange={(checked) => {
-                      commitDocument((current) => ({
-                        ...current,
-                        snapEnabled: checked,
-                      }), { recordHistory: false });
-                    }}
-                  />
-                  <Select<number>
-                    size="small"
-                    value={currentDocument.snapStepSec}
-                    style={{ width: 78 }}
-                    onChange={(value) => {
-                      commitDocument((current) => ({
-                        ...current,
-                        snapStepSec: value,
-                      }), { recordHistory: false });
-                    }}
-                    options={[
-                      { value: 0.1, label: "0.1s" },
-                      { value: 0.25, label: "0.25s" },
-                      { value: 0.5, label: "0.5s" },
-                      { value: 1, label: "1.0s" },
-                    ]}
-                  />
+                <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+                  <div className="hidden items-center gap-2 whitespace-nowrap text-[10px] text-[var(--af-muted)] md:flex">
+                    <span>{currentDocument.clips.length} clips / {currentDocument.audioTracks.length} audio</span>
+                    <span className="h-3.5 w-px bg-[rgba(229,221,210,0.92)]" />
+                    <span>{fitTimelineToView ? "适配视图" : `1s = ${timelinePixelsPerSecond.toFixed(1)}px`}</span>
+                  </div>
+                  <div className="inline-flex min-w-[220px] flex-1 items-center gap-1 rounded-full border border-[rgba(229,221,210,0.88)] bg-white px-2 py-0.5 sm:max-w-[420px] sm:flex-none">
+                    <Button
+                      size="small"
+                      type={fitTimelineToView ? "primary" : "default"}
+                      onClick={toggleFitTimelineToView}
+                    >
+                      适配
+                    </Button>
+                    <span className="h-4 w-px shrink-0 bg-[rgba(229,221,210,0.92)]" />
+                    <Tooltip title="缩小">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<MinusOutlined />}
+                        onClick={() => adjustTimelineZoom(-TIMELINE_ZOOM_STEP, { anchorSec: timelinePlayheadSec })}
+                      />
+                    </Tooltip>
+                    <Slider
+                      min={MIN_TIMELINE_ZOOM}
+                      max={MAX_TIMELINE_ZOOM}
+                      step={TIMELINE_ZOOM_STEP}
+                      value={displayedTimelineZoom}
+                      tooltip={{ open: false }}
+                      className="min-w-[72px] flex-1"
+                      onChange={(value) => {
+                        if (Array.isArray(value)) return;
+                        handleTimelineZoomSliderChange(value);
+                      }}
+                    />
+                    <span className="min-w-[42px] text-center text-[10px] text-[var(--af-text)]">
+                      {timelineZoomLabel}
+                    </span>
+                    <Tooltip title="放大">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<PlusOutlined />}
+                        onClick={() => adjustTimelineZoom(TIMELINE_ZOOM_STEP, { anchorSec: timelinePlayheadSec })}
+                      />
+                    </Tooltip>
+                  </div>
                 </div>
               </div>
             </div>
