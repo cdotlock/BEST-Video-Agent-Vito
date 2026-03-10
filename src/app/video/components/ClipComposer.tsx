@@ -12,7 +12,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
-  Alert,
   App,
   Button,
   Card,
@@ -3522,17 +3521,12 @@ export function ClipComposer({
   );
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <Typography.Text strong style={{ fontSize: 13 }}>
-            剪辑台
-          </Typography.Text>
-          <div className="mt-1 text-[11px] text-[var(--af-muted)]">
-            左侧只保留当前片段参数，右侧专注预览和时间线
-          </div>
-        </div>
-        <Space size={8}>
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <Typography.Text strong style={{ fontSize: 12 }}>
+          剪辑台
+        </Typography.Text>
+        <Space size={6}>
           <Button
             size="small"
             icon={<ThunderboltOutlined />}
@@ -3548,17 +3542,10 @@ export function ClipComposer({
         </Space>
       </div>
 
-      <Alert
-        className="mb-4"
-        showIcon
-        type="info"
-        title="拖素材进时间线即可编辑；时间尺、转场和节目总长都会和预览保持一致。"
-      />
-
       <div className="overflow-x-auto pb-1">
         <div
-          className="grid min-w-[860px] gap-3"
-          style={{ gridTemplateColumns: "272px minmax(0, 1fr)" }}
+          className="grid min-w-[840px] gap-2.5"
+          style={{ gridTemplateColumns: "256px minmax(0, 1fr)" }}
         >
           <Card
             className="ceramic-panel !border-transparent"
@@ -3686,26 +3673,10 @@ export function ClipComposer({
         <div className="flex min-h-0 flex-col gap-2">
           <Card
             className="ceramic-panel !border-transparent"
-            title="导演台"
-            extra={(
-              <Space size={8}>
-                {isProgramPlaying ? (
-                  <Button size="small" danger icon={<PauseCircleOutlined />} onClick={stopProgramPlayback}>
-                    停止
-                  </Button>
-                ) : (
-                  <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={startProgramPlayback}>
-                    播放
-                  </Button>
-                )}
-                <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => void handleExportVideo()}>
-                  导出视频
-                </Button>
-              </Space>
-            )}
+            styles={{ body: { padding: 12 } }}
           >
           {previewClip?.url ? (
-            <div className="relative h-60 overflow-hidden rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-black">
+            <div className="relative h-52 overflow-hidden rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-black">
               <video
                 ref={programVideoRef}
                 src={previewClip.url}
@@ -3738,22 +3709,40 @@ export function ClipComposer({
               ) : null}
             </div>
           ) : (
-            <div className="flex h-60 items-center justify-center rounded-[18px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[12px] text-[var(--af-muted)]">
+            <div className="flex h-52 items-center justify-center rounded-[16px] border border-dashed border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] text-[12px] text-[var(--af-muted)]">
               右侧素材栏拖入视频，或先在时间线选中片段。
             </div>
           )}
 
-          <div className="mt-2 border-t border-[rgba(229,221,210,0.85)] pt-3">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <Typography.Text strong style={{ fontSize: 13 }}>
-                时间线
-              </Typography.Text>
-              <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                {formatTimelineTime(timelinePlayheadSec)} / {formatTimelineTime(totalDuration)}
-              </Typography.Text>
+          <div className="mt-2 pt-1.5">
+            <div className="mb-1.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Typography.Text strong style={{ fontSize: 12 }}>
+                  时间线
+                </Typography.Text>
+                <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
+                  {formatTimelineTime(timelinePlayheadSec)} / {formatTimelineTime(totalDuration)}
+                </Typography.Text>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {isProgramPlaying ? (
+                  <Button size="small" danger icon={<PauseCircleOutlined />} onClick={stopProgramPlayback}>
+                    停止
+                  </Button>
+                ) : (
+                  <Button size="small" type="primary" icon={<CaretRightOutlined />} onClick={startProgramPlayback}>
+                    播放
+                  </Button>
+                )}
+                <div className="hidden items-center gap-2 text-[10px] text-[var(--af-muted)] md:flex">
+                  <span>{currentDocument.clips.length} clips / {currentDocument.audioTracks.length} audio</span>
+                  <span className="h-3.5 w-px bg-[rgba(229,221,210,0.92)]" />
+                  <span>{fitTimelineToView ? "适配视图" : `1s = ${timelinePixelsPerSecond.toFixed(1)}px`}</span>
+                </div>
+              </div>
             </div>
-            <div className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.82)] px-2.5 py-2">
-              <div className="flex flex-wrap items-center gap-1.5">
+            <div className="rounded-[14px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.82)] px-2 py-1.5">
+              <div className="flex flex-wrap items-center gap-1">
                 <Tooltip title="撤销">
                   <Button size="small" icon={<UndoOutlined />} disabled={editor.historyIndex === 0} onClick={handleUndo} />
                 </Tooltip>
@@ -3785,7 +3774,7 @@ export function ClipComposer({
                     onClick={handleRippleDelete}
                   />
                 </Tooltip>
-                <span className="mx-1 h-5 w-px shrink-0 bg-[rgba(229,221,210,0.92)]" />
+                <span className="mx-0.5 h-5 w-px shrink-0 bg-[rgba(229,221,210,0.92)]" />
                 <Button
                   size="small"
                   type={fitTimelineToView ? "primary" : "default"}
@@ -3793,7 +3782,7 @@ export function ClipComposer({
                 >
                   适配
                 </Button>
-                <div className="inline-flex min-w-[220px] flex-1 items-center gap-2 rounded-full border border-[rgba(229,221,210,0.88)] bg-white px-2.5 py-1">
+                <div className="inline-flex min-w-[176px] flex-1 items-center gap-1.5 rounded-full border border-[rgba(229,221,210,0.88)] bg-white px-2 py-0.5">
                   <Tooltip title="缩小">
                     <Button
                       size="small"
@@ -3808,13 +3797,13 @@ export function ClipComposer({
                     step={TIMELINE_ZOOM_STEP}
                     value={displayedTimelineZoom}
                     tooltip={{ open: false }}
-                    className="min-w-[84px] flex-1"
+                    className="min-w-[72px] flex-1"
                     onChange={(value) => {
                       if (Array.isArray(value)) return;
                       handleTimelineZoomSliderChange(value);
                     }}
                   />
-                  <span className="min-w-[48px] text-center text-[10px] text-[var(--af-text)]">
+                  <span className="min-w-[42px] text-center text-[10px] text-[var(--af-text)]">
                     {timelineZoomLabel}
                   </span>
                   <Tooltip title="放大">
@@ -3826,7 +3815,7 @@ export function ClipComposer({
                     />
                   </Tooltip>
                 </div>
-                <div className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(229,221,210,0.88)] bg-white px-2.5 py-1">
+                <div className="inline-flex items-center gap-1 rounded-full border border-[rgba(229,221,210,0.88)] bg-white px-2 py-0.5">
                   <span className="text-[10px] uppercase tracking-[0.14em] text-[var(--af-muted)]">Snap</span>
                   <Switch
                     size="small"
@@ -3841,7 +3830,7 @@ export function ClipComposer({
                   <Select<number>
                     size="small"
                     value={currentDocument.snapStepSec}
-                    style={{ width: 84 }}
+                    style={{ width: 78 }}
                     onChange={(value) => {
                       commitDocument((current) => ({
                         ...current,
@@ -3856,16 +3845,11 @@ export function ClipComposer({
                     ]}
                   />
                 </div>
-                <div className="ml-auto hidden items-center gap-2 text-[11px] text-[var(--af-muted)] md:flex">
-                  <span>{currentDocument.clips.length} clips / {currentDocument.audioTracks.length} audio</span>
-                  <span className="h-4 w-px bg-[rgba(229,221,210,0.92)]" />
-                  <span>{fitTimelineToView ? "适配视图" : `1s = ${timelinePixelsPerSecond.toFixed(1)}px`}</span>
-                </div>
               </div>
             </div>
-            <div className="mt-2 rounded-[18px] border border-[rgba(229,221,210,0.92)] bg-[rgba(248,244,238,0.84)] p-2">
-              <div className="mb-2 cursor-pointer rounded-[12px] border border-[rgba(124,114,102,0.12)] bg-[rgba(255,255,255,0.72)] px-2 py-1.5" onMouseDown={handleTimelineOverviewMouseDown}>
-                <div className="relative h-7">
+            <div className="mt-1.5 rounded-[16px] border border-[rgba(229,221,210,0.92)] bg-[rgba(248,244,238,0.84)] p-1.5">
+              <div className="mb-1.5 cursor-pointer rounded-[10px] border border-[rgba(124,114,102,0.12)] bg-[rgba(255,255,255,0.72)] px-1.5 py-1" onMouseDown={handleTimelineOverviewMouseDown}>
+                <div className="relative h-6">
                   <div className="absolute inset-x-1 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[rgba(214,222,226,0.42)]">
                     {timelineSegments.map((segment) => {
                       const left = effectiveTimelineScrollableWidth > 0
@@ -3924,8 +3908,8 @@ export function ClipComposer({
               </div>
 
               <div className="grid gap-1.5">
-                <div className="grid min-w-0 grid-cols-[38px_minmax(0,1fr)] gap-1.5">
-                  <div className="flex items-start justify-center rounded-[12px] border border-[rgba(124,114,102,0.12)] bg-[rgba(255,255,255,0.76)] px-1.5 py-2 text-[10px] font-medium tracking-[0.12em] text-[var(--af-muted)]">
+                <div className="grid min-w-0 grid-cols-[34px_minmax(0,1fr)] gap-1.5">
+                  <div className="flex items-start justify-center rounded-[10px] border border-[rgba(124,114,102,0.12)] bg-[rgba(255,255,255,0.76)] px-1 py-1.5 text-[10px] font-medium tracking-[0.12em] text-[var(--af-muted)]">
                     V1
                   </div>
                   <div
@@ -3934,7 +3918,7 @@ export function ClipComposer({
                     onDragOver={handleTimelineDragOver}
                     onDragLeave={handleTimelineDragLeave}
                     onDrop={handleTimelineDrop}
-                    className={`timeline-scrollbar overflow-x-auto rounded-[14px] border px-1.5 py-1.5 ${
+                    className={`timeline-scrollbar overflow-x-auto rounded-[12px] border px-1 py-1 ${
                       timelineDropTarget === "video"
                         ? "border-emerald-300 bg-emerald-50/70"
                         : "border-[rgba(124,114,102,0.14)] bg-[rgba(255,255,255,0.72)]"
@@ -3953,7 +3937,7 @@ export function ClipComposer({
                         style={{ left: timelinePlayheadSec * timelinePixelsPerSecond }}
                       />
                       <div
-                        className="relative mb-1.5 h-7 cursor-pointer overflow-hidden rounded-[10px] border border-[rgba(124,114,102,0.1)] bg-[rgba(244,239,232,0.66)]"
+                        className="relative mb-1 h-6 cursor-pointer overflow-hidden rounded-[8px] border border-[rgba(124,114,102,0.1)] bg-[rgba(244,239,232,0.66)]"
                         onMouseDown={handleTimelineRulerMouseDown}
                       >
                         {timelineTicks.map((tick) => (
@@ -3972,7 +3956,7 @@ export function ClipComposer({
                       </div>
 
                       <div
-                        className={`relative min-h-[84px] rounded-[14px] border border-[rgba(124,114,102,0.12)] px-1.5 py-1.5 ${
+                        className={`relative min-h-[84px] rounded-[12px] border border-[rgba(124,114,102,0.12)] px-1 py-1 ${
                           timelineDropTarget === "video" ? "bg-emerald-50/65" : "bg-[rgba(255,253,249,0.72)]"
                         }`}
                         onMouseDown={handleTimelineSurfaceMouseDown}
@@ -4022,12 +4006,12 @@ export function ClipComposer({
                   </div>
                 </div>
 
-                <div className="grid min-w-0 grid-cols-[38px_minmax(0,1fr)] gap-1.5">
-                  <div className="flex items-start justify-center rounded-[12px] border border-[rgba(124,114,102,0.12)] bg-[rgba(255,255,255,0.76)] px-1.5 py-2 text-[10px] font-medium tracking-[0.12em] text-[var(--af-muted)]">
+                <div className="grid min-w-0 grid-cols-[34px_minmax(0,1fr)] gap-1.5">
+                  <div className="flex items-start justify-center rounded-[10px] border border-[rgba(124,114,102,0.12)] bg-[rgba(255,255,255,0.76)] px-1 py-1.5 text-[10px] font-medium tracking-[0.12em] text-[var(--af-muted)]">
                     A1
                   </div>
                   <div
-                    className={`rounded-[14px] border px-2 py-1.5 ${
+                    className={`rounded-[12px] border px-1.5 py-1 ${
                       timelineDropTarget === "audio"
                         ? "border-emerald-300 bg-emerald-50/70"
                         : "border-[rgba(124,114,102,0.12)] bg-[rgba(255,255,255,0.7)]"
