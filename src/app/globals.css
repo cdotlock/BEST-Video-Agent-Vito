@@ -83,22 +83,23 @@ body {
 
 .timeline-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: rgba(201, 139, 91, 0.65) rgba(255, 255, 255, 0.08);
+  scrollbar-color: rgba(124, 114, 102, 0.46) rgba(229, 221, 210, 0.52);
+  overscroll-behavior-x: contain;
 }
 
 .timeline-scrollbar::-webkit-scrollbar {
-  height: 12px;
+  height: 10px;
 }
 
 .timeline-scrollbar::-webkit-scrollbar-track {
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(229, 221, 210, 0.52);
 }
 
 .timeline-scrollbar::-webkit-scrollbar-thumb {
-  border: 2px solid rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(248, 244, 238, 0.88);
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(201, 139, 91, 0.92), rgba(141, 167, 194, 0.88));
+  background: rgba(124, 114, 102, 0.46);
 }
 
 .director-bubble {
