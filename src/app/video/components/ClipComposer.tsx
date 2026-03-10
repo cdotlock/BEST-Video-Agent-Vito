@@ -405,6 +405,33 @@ function quantize(value: number, step: number, enabled: boolean): number {
   return Number((Math.round(value / step) * step).toFixed(3));
 }
 
+function magnetizeToStep(
+  rawValue: number,
+  step: number,
+  enabled: boolean,
+  state: { snappedValue: number | null },
+): number {
+  if (!enabled) {
+    state.snappedValue = null;
+    return Number(rawValue.toFixed(3));
+  }
+
+  const engageThreshold = step * 0.18;
+  const releaseThreshold = step * 0.32;
+  if (state.snappedValue !== null && Math.abs(rawValue - state.snappedValue) <= releaseThreshold) {
+    return state.snappedValue;
+  }
+
+  const nearest = Number((Math.round(rawValue / step) * step).toFixed(3));
+  if (Math.abs(rawValue - nearest) <= engageThreshold) {
+    state.snappedValue = nearest;
+    return nearest;
+  }
+
+  state.snappedValue = null;
+  return Number(rawValue.toFixed(3));
+}
+
 function resolveTimelinePixelsPerSecond(
   timelineZoom: number,
   fitTimelineToView: boolean,
@@ -2631,6 +2658,7 @@ export function ClipComposer({
       0.15,
       currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.15,
     );
+    const trimSnapState = { snappedValue: null as number | null };
     const pixelsPerSecond = resolveTimelinePixelsPerSecond(
       currentDocument.timelineZoom,
       fitTimelineToView,
@@ -2641,8 +2669,14 @@ export function ClipComposer({
     const applyAtClientX = (clientX: number) => {
       const deltaSec = (clientX - initialClientX) / pixelsPerSecond;
       if (edge === "start") {
+        const candidateSourceInSec = magnetizeToStep(
+          initialSourceInSec + deltaSec,
+          currentDocument.snapStepSec,
+          currentDocument.snapEnabled,
+          trimSnapState,
+        );
         const nextSourceInSec = clamp(
-          quantize(initialSourceInSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+          candidateSourceInSec,
           0,
           initialSourceOutSec - minDuration,
         );
@@ -2653,8 +2687,14 @@ export function ClipComposer({
         });
         return;
       }
+      const candidateSourceOutSec = magnetizeToStep(
+        initialSourceOutSec + deltaSec,
+        currentDocument.snapStepSec,
+        currentDocument.snapEnabled,
+        trimSnapState,
+      );
       const nextSourceOutSec = clamp(
-        quantize(initialSourceOutSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+        candidateSourceOutSec,
         initialSourceInSec + minDuration,
         sourceDurationSec,
       );
@@ -2819,6 +2859,7 @@ export function ClipComposer({
       0.12,
       currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.12,
     );
+    const trimSnapState = { snappedValue: null as number | null };
     const pixelsPerSecond = resolveTimelinePixelsPerSecond(
       currentDocument.timelineZoom,
       fitTimelineToView,
@@ -2833,8 +2874,14 @@ export function ClipComposer({
         clips: current.clips.map((clip) => {
           if (clip.id !== clipId) return clip;
           if (edge === "start") {
+            const candidateInSec = magnetizeToStep(
+              initialInSec + deltaSec,
+              currentDocument.snapStepSec,
+              currentDocument.snapEnabled,
+              trimSnapState,
+            );
             const nextInSec = clamp(
-              quantize(initialInSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+              candidateInSec,
               0,
               Math.min(initialOutSec - minDuration, sourceDurationSec),
             );
@@ -2843,8 +2890,14 @@ export function ClipComposer({
               inSec: nextInSec,
             };
           }
+          const candidateOutSec = magnetizeToStep(
+            initialOutSec + deltaSec,
+            currentDocument.snapStepSec,
+            currentDocument.snapEnabled,
+            trimSnapState,
+          );
           const nextOutSec = clamp(
-            quantize(initialOutSec + deltaSec, currentDocument.snapStepSec, currentDocument.snapEnabled),
+            candidateOutSec,
             initialInSec + minDuration,
             sourceDurationSec,
           );
