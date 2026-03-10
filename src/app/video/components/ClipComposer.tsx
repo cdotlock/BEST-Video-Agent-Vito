@@ -9,7 +9,6 @@ import {
   type CSSProperties,
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import {
   Alert,
@@ -20,6 +19,7 @@ import {
   Input,
   InputNumber,
   Select,
+  Slider,
   Space,
   Switch,
   Tag,
@@ -201,6 +201,22 @@ interface PreviewTransitionState extends ActivePreviewTransition {
   progress: number;
 }
 
+interface TimelineTick {
+  sec: number;
+  label: string;
+}
+
+interface TimelinePanSession {
+  startClientX: number;
+  startScrollLeft: number;
+}
+
+interface TimelineOverviewDragSession {
+  startClientX: number;
+  startScrollLeft: number;
+  overviewWidth: number;
+}
+
 interface SortableClipBlockProps {
   clip: ClipDraft;
   index: number;
@@ -241,9 +257,13 @@ export interface ClipComposerProps {
 const DEFAULT_PLAN_NAME = "clip_plan_current";
 const DEFAULT_TIMELINE_ZOOM = 16;
 const DEFAULT_SNAP_STEP = 0.25;
+const MIN_TIMELINE_ZOOM = 8;
+const MAX_TIMELINE_ZOOM = 120;
+const TIMELINE_ZOOM_STEP = 4;
 const MAX_HISTORY = 40;
 const AUTOSAVE_DELAY_MS = 1200;
 const LOCAL_DRAFT_PREFIX = "agentForge.video.clipStudio";
+const TIMELINE_RULER_STEPS = [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60] as const;
 const ROUGH_CUT_TRANSITION_PRESETS: ClipTransition[] = [
   "cut",
   "dissolve",
@@ -339,13 +359,13 @@ function findInsertIndexAtPlayhead(
 }
 
 function timelineStartAtIndex(clips: ClipDraft[], index: number): number {
-  let total = 0;
-  for (let i = 0; i < index; i += 1) {
-    const clip = clips[i];
-    if (!clip) continue;
-    total += clipDurationSec(clip);
+  if (index <= 0) return 0;
+  const segments = buildTimelineSegments(clips);
+  const segmentAtIndex = segments[index];
+  if (segmentAtIndex) {
+    return segmentAtIndex.startSec;
   }
-  return total;
+  return segments[segments.length - 1]?.endSec ?? 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -382,6 +402,40 @@ function clamp(value: number, min: number, max: number): number {
 function quantize(value: number, step: number, enabled: boolean): number {
   if (!enabled) return Number(value.toFixed(3));
   return Number((Math.round(value / step) * step).toFixed(3));
+}
+
+function resolveTimelinePixelsPerSecond(
+  timelineZoom: number,
+  fitTimelineToView: boolean,
+  timelineViewportWidth: number,
+  totalDuration: number,
+): number {
+  if (fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0) {
+    return Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1));
+  }
+  return Math.max(12, timelineZoom * 1.05);
+}
+
+function formatTimelineTime(valueSec: number): string {
+  const bounded = Math.max(0, valueSec);
+  const totalWholeSeconds = Math.floor(bounded);
+  const minutes = Math.floor(totalWholeSeconds / 60);
+  const seconds = totalWholeSeconds % 60;
+  const centiseconds = Math.floor((bounded - totalWholeSeconds) * 100);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(centiseconds).padStart(2, "0")}`;
+}
+
+function buildTimelineTicks(totalDuration: number, pixelsPerSecond: number): TimelineTick[] {
+  const desiredStep = 88 / Math.max(pixelsPerSecond, 0.001);
+  const tickStep = TIMELINE_RULER_STEPS.find((step) => step >= desiredStep) ?? TIMELINE_RULER_STEPS.at(-1) ?? 60;
+  const tickCount = Math.max(2, Math.ceil(totalDuration / tickStep) + 1);
+  return Array.from({ length: tickCount }, (_, index) => {
+    const sec = Number((index * tickStep).toFixed(3));
+    return {
+      sec,
+      label: formatTimelineTime(sec),
+    };
+  });
 }
 
 function cloneDocument(doc: ClipEditorDocument): ClipEditorDocument {
@@ -852,15 +906,17 @@ function SortableClipBlock({
     zIndex: isDragging ? 3 : undefined,
     ...blockStyle,
   };
+  const clipDuration = clipDurationSec(clip);
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`group relative flex h-[118px] flex-col overflow-hidden rounded-[14px] border px-2 py-2 shadow-sm transition ${
+      className={`group relative flex h-[126px] flex-col overflow-hidden rounded-[18px] border p-2.5 shadow-[0_16px_30px_rgba(20,27,33,0.16)] transition ${
         active
-          ? "border-[var(--af-brand)] bg-[rgba(255,253,249,0.98)]"
-          : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.9)]"
-      } ${playing ? "ring-2 ring-[rgba(76,139,106,0.35)]" : ""} cursor-grab select-none active:cursor-grabbing`}
+          ? "border-[rgba(47,107,95,0.85)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(246,250,247,0.94))]"
+          : "border-[rgba(219,227,232,0.44)] bg-[linear-gradient(180deg,rgba(255,255,255,0.95),rgba(247,249,250,0.9))]"
+      } ${playing ? "ring-2 ring-[rgba(76,139,106,0.55)]" : ""} cursor-grab select-none active:cursor-grabbing`}
       onClick={() => onSelect(clip.id)}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -873,27 +929,59 @@ function SortableClipBlock({
     >
       {transitionOverlapSec > 0 ? (
         <div
-          className="pointer-events-none absolute inset-y-0 left-0 z-[1] rounded-l-[14px] bg-[linear-gradient(90deg,rgba(47,107,95,0.26),rgba(47,107,95,0.08))]"
+          className="pointer-events-none absolute inset-y-0 left-0 z-[1] rounded-l-[18px] bg-[linear-gradient(90deg,rgba(47,107,95,0.28),rgba(47,107,95,0.08))]"
           style={{
-            width: `${Math.min(width - 8, Math.max(8, width * (transitionOverlapSec / Math.max(clipDurationSec(clip), 0.001))))}px`,
+            width: `${Math.min(width - 8, Math.max(10, width * (transitionOverlapSec / Math.max(clipDuration, 0.001))))}px`,
           }}
         />
       ) : null}
       <button
         type="button"
         aria-label={`${clip.title} 左侧裁切手柄`}
-        className="absolute inset-y-1 left-0 z-10 w-2 rounded-l-[14px] bg-[rgba(47,107,95,0.12)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+        className={`absolute inset-y-1.5 left-0 z-10 w-2 rounded-l-[18px] bg-[rgba(47,107,95,0.14)] transition cursor-ew-resize ${
+          active ? "opacity-100" : "opacity-0 group-hover:opacity-100 hover:opacity-100"
+        }`}
         onMouseDown={(event) => onTrimMouseDown(clip.id, "start", event)}
         onClick={(event) => event.stopPropagation()}
       />
       <button
         type="button"
         aria-label={`${clip.title} 右侧裁切手柄`}
-        className="absolute inset-y-1 right-0 z-10 w-2 rounded-r-[14px] bg-[rgba(47,107,95,0.12)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+        className={`absolute inset-y-1.5 right-0 z-10 w-2 rounded-r-[18px] bg-[rgba(47,107,95,0.14)] transition cursor-ew-resize ${
+          active ? "opacity-100" : "opacity-0 group-hover:opacity-100 hover:opacity-100"
+        }`}
         onMouseDown={(event) => onTrimMouseDown(clip.id, "end", event)}
         onClick={(event) => event.stopPropagation()}
       />
-      <div className="mb-2 shrink-0">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="rounded-full border border-[rgba(47,107,95,0.18)] bg-[rgba(47,107,95,0.08)] px-2 py-0.5 text-[9px] uppercase tracking-[0.12em] text-[var(--af-brand)]">
+              #{index + 1}
+            </span>
+            {playing ? (
+              <span className="rounded-full bg-[rgba(76,139,106,0.14)] px-2 py-0.5 text-[9px] font-medium text-[var(--af-brand)]">
+                Live
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-1 truncate text-[11px] font-semibold text-[var(--af-text)]">
+            {clip.title}
+          </div>
+        </div>
+        <Button
+          size="small"
+          type="text"
+          danger
+          icon={<DeleteOutlined />}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete(clip.id);
+          }}
+        />
+      </div>
+      <div className="mb-2.5 shrink-0">
         <ClipFramePreview
           url={clip.url}
           inSec={clip.inSec}
@@ -903,63 +991,49 @@ function SortableClipBlock({
       <div className="flex min-h-0 flex-1 flex-col justify-between">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="truncate text-[11px] font-medium text-[var(--af-text)]">
-              {index + 1}. {clip.title}
+            <div className="flex flex-wrap items-center gap-1.5 text-[9px]">
+              <span className="rounded-full border border-[rgba(47,107,95,0.16)] bg-[rgba(47,107,95,0.08)] px-2 py-0.5 text-[var(--af-brand)]">
+                {transitionLabel(clip.transition)}
+              </span>
+              <span className="rounded-full border border-[rgba(124,114,102,0.14)] bg-[rgba(255,255,255,0.72)] px-2 py-0.5 text-[var(--af-muted)]">
+                {clipDuration.toFixed(2)}s
+              </span>
+              <span className="rounded-full border border-[rgba(124,114,102,0.14)] bg-[rgba(255,255,255,0.72)] px-2 py-0.5 text-[var(--af-muted)]">
+                {compact ? "Move" : "Drag to reorder"}
+              </span>
             </div>
-            <div className="truncate text-[10px] text-[var(--af-muted)]">
-              {transitionLabel(clip.transition)} · {(clip.outSec - clip.inSec).toFixed(2)}s
-            </div>
-            <div className="truncate text-[9px] text-[var(--af-muted)]">
-              TL {timelineStartSec.toFixed(2)}s - {timelineEndSec.toFixed(2)}s
+            <div className="mt-1 truncate text-[9px] text-[var(--af-muted)]">
+              TL {formatTimelineTime(timelineStartSec)} - {formatTimelineTime(timelineEndSec)}
             </div>
             {transitionOverlapSec > 0 ? (
               <div className="mt-1 truncate text-[9px] text-[var(--af-muted)]">
                 转场重叠 {transitionOverlapSec.toFixed(2)}s
               </div>
             ) : null}
-            <div className="mt-1">
-              {clip.sourceDurationSec ? (
-                <>
-                  <div className="h-1.5 rounded-full bg-[rgba(229,221,210,0.82)]">
-                    <div
-                      className="h-full rounded-full bg-[rgba(47,107,95,0.55)]"
-                      style={{
-                        marginLeft: `${(clip.inSec / clip.sourceDurationSec) * 100}%`,
-                        width: `${Math.max(((clip.outSec - clip.inSec) / clip.sourceDurationSec) * 100, 6)}%`,
-                      }}
-                    />
-                  </div>
-                  <div className="mt-1 text-[9px] text-[var(--af-muted)]">
-                    源长 {clip.sourceDurationSec.toFixed(2)}s
-                    {clip.audioEnabled ? ` · 音量 ${clip.audioVolume}` : " · 静音"}
-                  </div>
-                </>
-              ) : (
-                <div className="text-[9px] text-[var(--af-muted)]">
-                  正在读取源时长…
-                </div>
-              )}
+          </div>
+        </div>
+        {clip.sourceDurationSec ? (
+          <div className="mt-2">
+            <div className="h-1.5 rounded-full bg-[rgba(214,222,226,0.74)]">
+              <div
+                className="h-full rounded-full bg-[linear-gradient(90deg,rgba(47,107,95,0.72),rgba(141,167,194,0.82))]"
+                style={{
+                  marginLeft: `${(clip.inSec / clip.sourceDurationSec) * 100}%`,
+                  width: `${Math.max((clipDuration / clip.sourceDurationSec) * 100, 6)}%`,
+                }}
+              />
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2 text-[9px] text-[var(--af-muted)]">
+              <span>{clip.inSec.toFixed(2)}s</span>
+              <span>{clip.audioEnabled ? `音量 ${clip.audioVolume}` : "片段静音"}</span>
+              <span>{clip.outSec.toFixed(2)}s</span>
             </div>
           </div>
-          <Button
-            size="small"
-            type="text"
-            danger
-            icon={<DeleteOutlined />}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              onDelete(clip.id);
-            }}
-          />
-        </div>
-        <div className="mt-2 flex items-center justify-between gap-2 text-[9px] text-[var(--af-muted)]">
-          <span>{clip.inSec.toFixed(2)}s</span>
-          <span className="truncate rounded-full border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.9)] px-2 py-0.5 text-[9px] text-[var(--af-muted)]">
-            {compact ? "拖动" : "拖动排序"}
-          </span>
-          <span>{clip.outSec.toFixed(2)}s</span>
-        </div>
+        ) : (
+          <div className="mt-2 text-[9px] text-[var(--af-muted)]">
+            正在读取源时长…
+          </div>
+        )}
       </div>
     </div>
   );
@@ -997,6 +1071,8 @@ export function ClipComposer({
   const pendingAudioProbeUrlsRef = useRef(new Set<string>());
   const mediaDurationCacheRef = useRef(new Map<string, number>());
   const programCarryoverOffsetRef = useRef(0);
+  const timelinePanSessionRef = useRef<TimelinePanSession | null>(null);
+  const timelineOverviewDragSessionRef = useRef<TimelineOverviewDragSession | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -1007,9 +1083,11 @@ export function ClipComposer({
   const [timelinePlayheadSec, setTimelinePlayheadSec] = useState(0);
   const [timelineDropTarget, setTimelineDropTarget] = useState<"video" | "audio" | null>(null);
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
+  const [timelineScrollLeft, setTimelineScrollLeft] = useState(0);
   const [fitTimelineToView, setFitTimelineToView] = useState(false);
   const [selectedAudioTrackId, setSelectedAudioTrackId] = useState<string | null>(null);
   const [activePreviewTransition, setActivePreviewTransition] = useState<ActivePreviewTransition | null>(null);
+  const [isTimelinePanning, setIsTimelinePanning] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -2341,9 +2419,12 @@ export function ClipComposer({
 
     const initialClientX = event.clientX;
     const initialStartSec = baseTrack.startSec;
-    const pixelsPerSecond = fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0
-      ? Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1))
-      : Math.max(12, currentDocument.timelineZoom * 1.05);
+    const pixelsPerSecond = resolveTimelinePixelsPerSecond(
+      currentDocument.timelineZoom,
+      fitTimelineToView,
+      timelineViewportWidth,
+      totalDuration,
+    );
 
     const applyAtClientX = (clientX: number) => {
       const deltaSec = (clientX - initialClientX) / pixelsPerSecond;
@@ -2436,9 +2517,12 @@ export function ClipComposer({
       0.15,
       currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.15,
     );
-    const pixelsPerSecond = fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0
-      ? Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1))
-      : Math.max(12, currentDocument.timelineZoom * 1.05);
+    const pixelsPerSecond = resolveTimelinePixelsPerSecond(
+      currentDocument.timelineZoom,
+      fitTimelineToView,
+      timelineViewportWidth,
+      totalDuration,
+    );
 
     const applyAtClientX = (clientX: number) => {
       const deltaSec = (clientX - initialClientX) / pixelsPerSecond;
@@ -2621,9 +2705,12 @@ export function ClipComposer({
       0.12,
       currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.12,
     );
-    const pixelsPerSecond = fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0
-      ? Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1))
-      : Math.max(12, currentDocument.timelineZoom * 1.05);
+    const pixelsPerSecond = resolveTimelinePixelsPerSecond(
+      currentDocument.timelineZoom,
+      fitTimelineToView,
+      timelineViewportWidth,
+      totalDuration,
+    );
 
     const applyTrimAtClientX = (clientX: number) => {
       const deltaSec = (clientX - initialClientX) / Math.max(pixelsPerSecond, 0.001);
@@ -2808,39 +2895,13 @@ export function ClipComposer({
     return "未开始";
   }, [autosaveState, lastSavedAt]);
 
-  const adjustTimelineZoom = useCallback((delta: number) => {
-    setFitTimelineToView(false);
-    commitDocument((current) => ({
-      ...current,
-      timelineZoom: clamp(current.timelineZoom + delta, 8, 120),
-    }), { recordHistory: false });
-  }, [commitDocument]);
-
-  useEffect(() => {
-    const viewport = timelineViewportRef.current;
-    if (!viewport) return;
-
-    const updateWidth = () => {
-      setTimelineViewportWidth(viewport.clientWidth);
-    };
-
-    updateWidth();
-
-    const observer = new ResizeObserver(() => {
-      updateWidth();
-    });
-    observer.observe(viewport);
-
-    return () => observer.disconnect();
-  }, []);
-
   const timelinePixelsPerSecond = useMemo(
-    () => {
-      if (fitTimelineToView && totalDuration > 0 && timelineViewportWidth > 0) {
-        return Math.max(1.2, (timelineViewportWidth - 24) / Math.max(totalDuration, 0.1));
-      }
-      return Math.max(12, currentDocument.timelineZoom * 1.05);
-    },
+    () => resolveTimelinePixelsPerSecond(
+      currentDocument.timelineZoom,
+      fitTimelineToView,
+      timelineViewportWidth,
+      totalDuration,
+    ),
     [currentDocument.timelineZoom, fitTimelineToView, timelineViewportWidth, totalDuration],
   );
 
@@ -2851,9 +2912,212 @@ export function ClipComposer({
     ),
     [timelinePixelsPerSecond, timelineViewportWidth, totalDuration],
   );
+  const timelineTicks = useMemo(
+    () => buildTimelineTicks(totalDuration, timelinePixelsPerSecond),
+    [timelinePixelsPerSecond, totalDuration],
+  );
+  const displayedTimelineZoom = fitTimelineToView
+    ? Math.round(clamp(timelinePixelsPerSecond / 1.05, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM))
+    : currentDocument.timelineZoom;
+  const visibleDurationSec = useMemo(
+    () => (timelineViewportWidth > 0 ? timelineViewportWidth / Math.max(timelinePixelsPerSecond, 0.001) : 0),
+    [timelinePixelsPerSecond, timelineViewportWidth],
+  );
+  const visibleStartSec = useMemo(
+    () => clamp(timelineScrollLeft / Math.max(timelinePixelsPerSecond, 0.001), 0, totalDuration),
+    [timelinePixelsPerSecond, timelineScrollLeft, totalDuration],
+  );
+  const visibleEndSec = useMemo(
+    () => clamp(visibleStartSec + visibleDurationSec, 0, totalDuration),
+    [totalDuration, visibleDurationSec, visibleStartSec],
+  );
+  const overviewWindowLeftPercent = timelineTrackWidth > 0
+    ? clamp((timelineScrollLeft / timelineTrackWidth) * 100, 0, 100)
+    : 0;
+  const overviewWindowWidthPercent = timelineTrackWidth > 0
+    ? clamp((timelineViewportWidth / timelineTrackWidth) * 100, 0, 100)
+    : 100;
+  const overviewPlayheadPercent = timelineTrackWidth > 0
+    ? clamp(((timelinePlayheadSec * timelinePixelsPerSecond) / timelineTrackWidth) * 100, 0, 100)
+    : 0;
   const timelineZoomLabel = fitTimelineToView
     ? "适配"
     : `${Math.round((currentDocument.timelineZoom / DEFAULT_TIMELINE_ZOOM) * 100)}%`;
+
+  const syncTimelineViewport = useCallback(() => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+    setTimelineViewportWidth((current) => (current === viewport.clientWidth ? current : viewport.clientWidth));
+    setTimelineScrollLeft((current) => (
+      Math.abs(current - viewport.scrollLeft) <= 0.5 ? current : viewport.scrollLeft
+    ));
+  }, []);
+
+  useEffect(() => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+
+    syncTimelineViewport();
+    const handleScroll = () => {
+      syncTimelineViewport();
+    };
+    const observer = new ResizeObserver(() => {
+      syncTimelineViewport();
+    });
+
+    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    observer.observe(viewport);
+
+    return () => {
+      viewport.removeEventListener("scroll", handleScroll);
+      observer.disconnect();
+    };
+  }, [syncTimelineViewport]);
+
+  useEffect(() => {
+    if (!fitTimelineToView) return;
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+    viewport.scrollLeft = 0;
+  }, [fitTimelineToView, timelineTrackWidth]);
+
+  const scrollTimelineViewportTo = useCallback((nextScrollLeft: number) => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+    const maxScrollLeft = Math.max(0, timelineTrackWidth - viewport.clientWidth);
+    viewport.scrollLeft = clamp(nextScrollLeft, 0, maxScrollLeft);
+  }, [timelineTrackWidth]);
+
+  const setTimelineZoomLevel = useCallback((
+    nextZoom: number,
+    options?: {
+      anchorClientX?: number;
+      anchorSec?: number;
+    },
+  ) => {
+    const boundedZoom = clamp(nextZoom, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM);
+    const viewport = timelineViewportRef.current;
+    let anchorOffsetX = 0;
+    let anchorSec = options?.anchorSec ?? null;
+
+    if (viewport) {
+      const bounds = viewport.getBoundingClientRect();
+      anchorOffsetX = options?.anchorClientX != null
+        ? clamp(options.anchorClientX - bounds.left, 0, viewport.clientWidth)
+        : viewport.clientWidth / 2;
+      anchorSec ??= clamp(
+        (viewport.scrollLeft + anchorOffsetX) / Math.max(timelinePixelsPerSecond, 0.001),
+        0,
+        totalDuration,
+      );
+    }
+
+    setFitTimelineToView(false);
+    commitDocument((current) => ({
+      ...current,
+      timelineZoom: boundedZoom,
+    }), { recordHistory: false });
+
+    if (!viewport || anchorSec === null) return;
+    window.requestAnimationFrame(() => {
+      const nextPixelsPerSecond = resolveTimelinePixelsPerSecond(
+        boundedZoom,
+        false,
+        viewport.clientWidth,
+        totalDuration,
+      );
+      const nextScrollLeft = (anchorSec * nextPixelsPerSecond) - anchorOffsetX;
+      scrollTimelineViewportTo(nextScrollLeft);
+    });
+  }, [commitDocument, scrollTimelineViewportTo, timelinePixelsPerSecond, totalDuration]);
+
+  const adjustTimelineZoom = useCallback((
+    delta: number,
+    options?: {
+      anchorClientX?: number;
+      anchorSec?: number;
+    },
+  ) => {
+    const baseZoom = fitTimelineToView
+      ? clamp(timelinePixelsPerSecond / 1.05, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM)
+      : currentDocument.timelineZoom;
+    setTimelineZoomLevel(baseZoom + delta, options);
+  }, [currentDocument.timelineZoom, fitTimelineToView, setTimelineZoomLevel, timelinePixelsPerSecond]);
+
+  const beginTimelinePan = useCallback((clientX: number) => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+
+    timelinePanSessionRef.current = {
+      startClientX: clientX,
+      startScrollLeft: viewport.scrollLeft,
+    };
+    setIsTimelinePanning(true);
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const session = timelinePanSessionRef.current;
+      const currentViewport = timelineViewportRef.current;
+      if (!session || !currentViewport) return;
+      const deltaX = moveEvent.clientX - session.startClientX;
+      const nextScrollLeft = session.startScrollLeft - deltaX;
+      scrollTimelineViewportTo(nextScrollLeft);
+    };
+
+    const onUp = () => {
+      timelinePanSessionRef.current = null;
+      setIsTimelinePanning(false);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [scrollTimelineViewportTo]);
+
+  const handleTimelineOverviewMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const ratio = clamp((event.clientX - bounds.left) / Math.max(bounds.width, 1), 0, 1);
+    const targetScrollLeft = (ratio * timelineTrackWidth) - (timelineViewportWidth / 2);
+    scrollTimelineViewportTo(targetScrollLeft);
+  }, [scrollTimelineViewportTo, timelineTrackWidth, timelineViewportWidth]);
+
+  const handleTimelineOverviewWindowMouseDown = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const bounds = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (!bounds) return;
+
+    timelineOverviewDragSessionRef.current = {
+      startClientX: event.clientX,
+      startScrollLeft: timelineScrollLeft,
+      overviewWidth: bounds.width,
+    };
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const session = timelineOverviewDragSessionRef.current;
+      if (!session) return;
+      const deltaRatio = (moveEvent.clientX - session.startClientX) / Math.max(session.overviewWidth, 1);
+      scrollTimelineViewportTo(session.startScrollLeft + (deltaRatio * timelineTrackWidth));
+    };
+    const onUp = () => {
+      timelineOverviewDragSessionRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [scrollTimelineViewportTo, timelineScrollLeft, timelineTrackWidth]);
+
+  const handleTimelineViewportMouseDownCapture = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    beginTimelinePan(event.clientX);
+  }, [beginTimelinePan]);
 
   const seekPlayhead = useCallback((nextSec: number) => {
     const clampedSec = clamp(nextSec, 0, totalDuration);
@@ -2889,15 +3153,8 @@ export function ClipComposer({
     });
   }, [seekPlayhead, timelinePixelsPerSecond, totalDuration]);
 
-  const handleTimelineWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!event.metaKey && !event.ctrlKey) return;
-    event.preventDefault();
-    adjustTimelineZoom(event.deltaY > 0 ? -4 : 4);
-  }, [adjustTimelineZoom]);
-
-  const handleTimelineRulerMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    scrubTimelineAtClientX(event.clientX);
+  const beginTimelineScrub = useCallback((clientX: number) => {
+    scrubTimelineAtClientX(clientX);
 
     const onMove = (moveEvent: MouseEvent) => {
       scrubTimelineAtClientX(moveEvent.clientX);
@@ -2910,6 +3167,70 @@ export function ClipComposer({
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   }, [scrubTimelineAtClientX]);
+
+  const handleTimelineWheel = useCallback((event: WheelEvent) => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+
+    if (event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      adjustTimelineZoom(event.deltaY > 0 ? -TIMELINE_ZOOM_STEP : TIMELINE_ZOOM_STEP, {
+        anchorClientX: event.clientX,
+      });
+      return;
+    }
+
+    const delta = Math.abs(event.deltaX) > 0.1 ? event.deltaX : event.deltaY;
+    if (Math.abs(delta) <= 0.1) return;
+    if (viewport.scrollWidth <= viewport.clientWidth + 1) return;
+
+    event.preventDefault();
+    scrollTimelineViewportTo(viewport.scrollLeft + delta);
+  }, [adjustTimelineZoom, scrollTimelineViewportTo]);
+
+  useEffect(() => {
+    const viewport = timelineViewportRef.current;
+    if (!viewport) return;
+
+    const listener = (event: WheelEvent) => {
+      handleTimelineWheel(event);
+    };
+
+    viewport.addEventListener("wheel", listener, { passive: false });
+    return () => {
+      viewport.removeEventListener("wheel", listener);
+    };
+  }, [handleTimelineWheel]);
+
+  const handleTimelineSurfaceMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button === 1) {
+      event.preventDefault();
+      beginTimelinePan(event.clientX);
+      return;
+    }
+    if (event.button !== 0 || event.target !== event.currentTarget) return;
+    event.preventDefault();
+    beginTimelineScrub(event.clientX);
+  }, [beginTimelinePan, beginTimelineScrub]);
+
+  const handleTimelineZoomSliderChange = useCallback((value: number) => {
+    setTimelineZoomLevel(value, { anchorSec: timelinePlayheadSec });
+  }, [setTimelineZoomLevel, timelinePlayheadSec]);
+
+  const toggleFitTimelineToView = useCallback(() => {
+    setFitTimelineToView((current) => !current);
+  }, []);
+
+  const handleTimelineRulerMouseDown = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.button === 1) {
+      event.preventDefault();
+      beginTimelinePan(event.clientX);
+      return;
+    }
+    if (event.button !== 0) return;
+    event.preventDefault();
+    beginTimelineScrub(event.clientX);
+  }, [beginTimelinePan, beginTimelineScrub]);
 
   const handleTimelineDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     const types = Array.from(event.dataTransfer.types);
@@ -3247,17 +3568,17 @@ export function ClipComposer({
             </div>
           )}
 
-          <div className="mt-2 border-t border-[rgba(229,221,210,0.85)] pt-2">
-            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+          <div className="mt-2 border-t border-[rgba(229,221,210,0.85)] pt-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <Typography.Text strong style={{ fontSize: 13 }}>
                 时间线
               </Typography.Text>
               <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                视频按真实节目时长排布，转场重叠会直接反映在时间线上。
+                参考成熟 NLE 交互补强导航、缩放、滚动和平移体验。
               </Typography.Text>
             </div>
-            <div className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] px-2.5 py-1.5">
-              <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap pb-1">
+            <div className="rounded-[18px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.82)] px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Tooltip title="撤销">
                   <Button size="small" icon={<UndoOutlined />} disabled={editor.historyIndex === 0} onClick={handleUndo} />
                 </Tooltip>
@@ -3293,27 +3614,51 @@ export function ClipComposer({
                 <Button
                   size="small"
                   type={fitTimelineToView ? "primary" : "default"}
-                  onClick={() => setFitTimelineToView((prev) => !prev)}
+                  onClick={toggleFitTimelineToView}
                 >
                   全局
                 </Button>
-                <div className="inline-flex items-center gap-1 rounded-full border border-[rgba(229,221,210,0.9)] bg-white px-2 py-1">
+                <div className="inline-flex min-w-[248px] flex-1 items-center gap-2 rounded-full border border-[rgba(229,221,210,0.9)] bg-white px-3 py-1">
                   <span className="pr-1 text-[10px] uppercase tracking-[0.12em] text-[var(--af-muted)]">
                     Zoom
                   </span>
-                  <ZoomOutOutlined className="text-[11px] text-[var(--af-muted)]" />
                   <Tooltip title="缩小">
-                    <Button size="small" type="text" icon={<MinusOutlined />} onClick={() => adjustTimelineZoom(-8)} />
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<MinusOutlined />}
+                      onClick={() => adjustTimelineZoom(-TIMELINE_ZOOM_STEP, { anchorSec: timelinePlayheadSec })}
+                    />
                   </Tooltip>
+                  <ZoomOutOutlined className="text-[11px] text-[var(--af-muted)]" />
+                  <Slider
+                    min={MIN_TIMELINE_ZOOM}
+                    max={MAX_TIMELINE_ZOOM}
+                    step={TIMELINE_ZOOM_STEP}
+                    value={displayedTimelineZoom}
+                    tooltip={{ open: false }}
+                    className="mx-1 min-w-[96px] flex-1"
+                    onChange={(value) => {
+                      if (Array.isArray(value)) return;
+                      handleTimelineZoomSliderChange(value);
+                    }}
+                  />
                   <span className="min-w-[54px] text-center text-[11px] text-[var(--af-text)]">
                     {timelineZoomLabel}
                   </span>
                   <Tooltip title="放大">
-                    <Button size="small" type="text" icon={<PlusOutlined />} onClick={() => adjustTimelineZoom(8)} />
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<PlusOutlined />}
+                      onClick={() => adjustTimelineZoom(TIMELINE_ZOOM_STEP, { anchorSec: timelinePlayheadSec })}
+                    />
                   </Tooltip>
                   <ZoomInOutlined className="text-[11px] text-[var(--af-muted)]" />
                 </div>
-                <span className="text-[11px] text-[var(--af-muted)]">Ctrl/Command + 滚轮</span>
+                <span className="text-[11px] text-[var(--af-muted)]">Ctrl/Command + 滚轮缩放</span>
+                <span className="text-[11px] text-[var(--af-muted)]">滚轮横向滚动</span>
+                <span className="text-[11px] text-[var(--af-muted)]">中键拖动画布</span>
                 <span className="mx-1 h-5 w-px shrink-0 bg-[rgba(229,221,210,0.92)]" />
                 <span className="text-[11px] text-[var(--af-muted)]">吸附</span>
                 <Switch
@@ -3345,188 +3690,328 @@ export function ClipComposer({
                 />
               </div>
             </div>
+            <div className="mt-2 rounded-[24px] border border-[rgba(28,38,44,0.12)] bg-[linear-gradient(180deg,rgba(32,42,49,0.96),rgba(43,54,61,0.94))] p-3 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_16px_36px_rgba(32,42,49,0.18)]">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-[11px] text-white/82">
+                  Playhead {formatTimelineTime(timelinePlayheadSec)}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-[11px] text-white/72">
+                  视窗 {formatTimelineTime(visibleStartSec)} - {formatTimelineTime(visibleEndSec)}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-[11px] text-white/72">
+                  {currentDocument.clips.length} clips / {currentDocument.audioTracks.length} audio
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-[11px] text-white/72">
+                  {fitTimelineToView ? "全局适配" : `1s = ${timelinePixelsPerSecond.toFixed(1)}px`}
+                </span>
+              </div>
 
-            <div
-              ref={timelineViewportRef}
-              onWheel={handleTimelineWheel}
-              onDragOver={handleTimelineDragOver}
-              onDragLeave={handleTimelineDragLeave}
-              onDrop={handleTimelineDrop}
-              className={`mt-2 overflow-x-auto rounded-[18px] border px-2 py-2 transition ${
-                timelineDropTarget === "video"
-                  ? "border-emerald-400 bg-emerald-50/65"
-                  : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)]"
-              }`}
-            >
-              <div className="relative" style={{ minWidth: timelineTrackWidth }}>
-                <div
-                  className="mb-1.5 h-5 cursor-pointer overflow-hidden rounded-[10px] border border-[rgba(229,221,210,0.8)] bg-[rgba(255,255,255,0.7)]"
-                  onMouseDown={handleTimelineRulerMouseDown}
-                >
-                  {Array.from({ length: Math.max(2, Math.ceil(totalDuration) + 1) }, (_, tick) => (
-                    <div
-                      key={`tick-${tick}`}
-                      className="absolute top-0 h-6 border-l border-[rgba(124,114,102,0.18)] text-[9px] text-[var(--af-muted)]"
-                      style={{ left: tick * timelinePixelsPerSecond }}
-                    >
-                      {tick % 2 === 0 ? <span className="ml-1">{tick}s</span> : null}
+              <div className="grid min-w-0 gap-2 lg:grid-cols-[120px_minmax(0,1fr)]">
+                <div className="flex flex-col gap-2">
+                  <div className="rounded-[18px] border border-white/10 bg-white/7 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-white/42">NAV</div>
+                    <div className="mt-1 text-[12px] font-semibold text-white/92">总览导航</div>
+                    <div className="mt-1 text-[11px] leading-5 text-white/62">
+                      拖动窗口跳转
+                      <br />
+                      中键拖动画布
                     </div>
-                  ))}
-                  <div
-                    className="pointer-events-none absolute bottom-0 top-0 w-[2px] bg-[var(--af-accent)]"
-                    style={{ left: timelinePlayheadSec * timelinePixelsPerSecond }}
-                  />
-                </div>
-                {currentDocument.clips.length === 0 ? (
-                  <div className="flex h-24 items-center justify-center rounded-[16px] border border-dashed border-[rgba(229,221,210,0.9)] text-[12px] text-[var(--af-muted)]">
-                    时间线为空：从右侧素材栏拖拽视频到这里即可加入。
                   </div>
-                ) : (
-                  <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-                    <SortableContext items={currentDocument.clips.map((clip) => clip.id)} strategy={horizontalListSortingStrategy}>
-                      <div className="flex min-w-max items-start gap-0">
+                  <div className="rounded-[18px] border border-white/10 bg-white/7 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-white/42">V1</div>
+                    <div className="mt-1 text-[12px] font-semibold text-white/92">Program</div>
+                    <div className="mt-1 text-[11px] leading-5 text-white/62">
+                      真实节目时长
+                      <br />
+                      转场重叠可视化
+                    </div>
+                  </div>
+                  <div className="rounded-[18px] border border-white/10 bg-white/7 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-white/42">A1</div>
+                    <div className="mt-1 text-[12px] font-semibold text-white/92">Audio</div>
+                    <div className="mt-1 text-[11px] leading-5 text-white/62">
+                      {currentDocument.audioTracks.length === 0 ? "把视频拖到这里做 BGM" : `${currentDocument.audioTracks.length} 条音频素材`}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="min-w-0">
+                  <div
+                    className="mb-2 cursor-pointer rounded-[18px] border border-white/10 bg-white/6 p-2"
+                    onMouseDown={handleTimelineOverviewMouseDown}
+                  >
+                    <div className="relative h-10">
+                      <div className="absolute inset-x-2 top-1.5 h-3 rounded-full bg-white/8">
                         {timelineSegments.map((segment) => {
-                          const clip = segment.clip;
-                          const duration = Math.max(0, clip.outSec - clip.inSec);
-                          const width = Math.max(80, duration * timelinePixelsPerSecond);
-                          const compact = width < 220;
+                          const left = timelineTrackWidth > 0
+                            ? (segment.startSec * timelinePixelsPerSecond / timelineTrackWidth) * 100
+                            : 0;
+                          const width = timelineTrackWidth > 0
+                            ? Math.max((segment.durationSec * timelinePixelsPerSecond / timelineTrackWidth) * 100, 0.8)
+                            : 100;
                           return (
-                            <SortableClipBlock
-                              key={clip.id}
-                              clip={clip}
-                              index={segment.index}
-                              timelineStartSec={segment.startSec}
-                              timelineEndSec={segment.endSec}
-                              transitionOverlapSec={segment.overlapBeforeSec}
-                              width={width}
-                              compact={compact}
-                              active={clip.id === currentDocument.selectedClipId}
-                              playing={isProgramPlaying
-                                ? programPlaybackIndex === segment.index
-                                : playheadSegment?.index === segment.index}
-                              onSelect={selectClip}
-                              onDelete={removeClip}
-                              onTrimMouseDown={handleTrimMouseDown}
-                              style={{
-                                marginLeft: segment.index === 0
-                                  ? 0
-                                  : -segment.overlapBeforeSec * timelinePixelsPerSecond,
-                              }}
+                            <div
+                              key={`overview-video-${segment.clip.id}`}
+                              className="absolute inset-y-0 rounded-full bg-[linear-gradient(90deg,rgba(201,139,91,0.88),rgba(141,167,194,0.8))]"
+                              style={{ left: `${left}%`, width: `${width}%` }}
                             />
                           );
                         })}
                       </div>
-                    </SortableContext>
-                  </DndContext>
-                )}
+                      <div className="absolute inset-x-2 bottom-1 h-2 rounded-full bg-white/8">
+                        {audioTimelineSegments.map((segment) => {
+                          const left = timelineTrackWidth > 0
+                            ? (segment.startSec * timelinePixelsPerSecond / timelineTrackWidth) * 100
+                            : 0;
+                          const width = timelineTrackWidth > 0
+                            ? Math.max((segment.durationSec * timelinePixelsPerSecond / timelineTrackWidth) * 100, 1.2)
+                            : 100;
+                          return (
+                            <div
+                              key={`overview-audio-${segment.track.id}`}
+                              className="absolute inset-y-0 rounded-full bg-[rgba(111,178,132,0.82)]"
+                              style={{ left: `${left}%`, width: `${width}%` }}
+                            />
+                          );
+                        })}
+                      </div>
+                      <div className="pointer-events-none absolute inset-x-2 inset-y-1 z-[2]">
+                        <div
+                          className="absolute inset-y-0 w-[2px] rounded-full bg-[var(--af-accent)] shadow-[0_0_0_3px_rgba(201,139,91,0.16)]"
+                          style={{ left: `${overviewPlayheadPercent}%` }}
+                        />
+                      </div>
+                      <div className="absolute inset-x-2 inset-y-1 z-[3]">
+                        <button
+                          type="button"
+                          aria-label="拖动可见窗口"
+                          className="absolute inset-y-0 rounded-[12px] border border-white/35 bg-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)] backdrop-blur"
+                          style={{
+                            left: `${overviewWindowLeftPercent}%`,
+                            width: `${overviewWindowWidthPercent}%`,
+                            minWidth: 28,
+                          }}
+                          onMouseDown={handleTimelineOverviewWindowMouseDown}
+                        >
+                          <span className="mx-auto block h-full w-8 rounded-full border-x border-white/18" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
 
-                <div
-                  className={`mt-2 rounded-[14px] border px-2 py-1 transition ${
-                    timelineDropTarget === "audio"
-                      ? "border-emerald-400 bg-emerald-50/65"
-                      : "border-[rgba(229,221,210,0.82)] bg-[rgba(255,255,255,0.62)]"
-                  }`}
-                  onDragOver={handleAudioTrackDragOver}
-                  onDragLeave={handleAudioTrackDragLeave}
-                  onDrop={handleAudioTrackDrop}
-                >
-                  <div className="relative h-6" style={{ minWidth: timelineTrackWidth }}>
-                    {audioTimelineSegments.map((segment) => (
+                  <div
+                    ref={timelineViewportRef}
+                    onMouseDownCapture={handleTimelineViewportMouseDownCapture}
+                    onDragOver={handleTimelineDragOver}
+                    onDragLeave={handleTimelineDragLeave}
+                    onDrop={handleTimelineDrop}
+                    className={`timeline-scrollbar overflow-x-auto rounded-[20px] border px-2 py-2 transition ${
+                      timelineDropTarget === "video"
+                        ? "border-emerald-300/85 bg-emerald-500/8"
+                        : "border-white/10 bg-black/10"
+                    } ${isTimelinePanning ? "cursor-grabbing" : "cursor-default"}`}
+                  >
+                    <div className="relative pb-1" style={{ minWidth: timelineTrackWidth }}>
+                      {timelineTicks.map((tick) => (
+                        <div
+                          key={`grid-${tick.sec}`}
+                          className="pointer-events-none absolute bottom-0 top-0 border-l border-white/7"
+                          style={{ left: tick.sec * timelinePixelsPerSecond }}
+                        />
+                      ))}
                       <div
-                        key={segment.track.id}
-                        className={`group absolute top-0.5 h-5 overflow-hidden rounded-full border px-2 text-[10px] cursor-grab active:cursor-grabbing ${
-                          selectedAudioTrack?.id === segment.track.id
-                            ? "border-[rgba(47,107,95,0.5)] bg-[rgba(111,178,132,0.28)] shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]"
-                            : "border-[rgba(76,139,106,0.28)] bg-[rgba(111,178,132,0.16)]"
-                        }`}
-                        style={{
-                          left: segment.startSec * timelinePixelsPerSecond,
-                          width: Math.max(64, segment.durationSec * timelinePixelsPerSecond),
-                          opacity: segment.track.muted ? 0.5 : 1,
-                        }}
-                        onMouseDown={(event) => handleAudioTrackMoveMouseDown(segment.track.id, event)}
-                        onClick={() => setSelectedAudioTrackId(segment.track.id)}
+                        className="pointer-events-none absolute bottom-0 top-0 z-[1] w-px bg-[rgba(201,139,91,0.9)] shadow-[0_0_0_3px_rgba(201,139,91,0.12)]"
+                        style={{ left: timelinePlayheadSec * timelinePixelsPerSecond }}
+                      />
+                      <div
+                        className="relative mb-2 h-9 cursor-pointer overflow-hidden rounded-[14px] border border-white/10 bg-white/6"
+                        onMouseDown={handleTimelineRulerMouseDown}
                       >
-                        <button
-                          type="button"
-                          aria-label={`${segment.track.title} 左侧裁切手柄`}
-                          className="absolute inset-y-0 left-0 z-10 w-2 rounded-l-full bg-[rgba(47,107,95,0.16)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
-                          onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "start", event)}
-                          onClick={(event) => event.stopPropagation()}
-                        />
-                        <button
-                          type="button"
-                          aria-label={`${segment.track.title} 右侧裁切手柄`}
-                          className="absolute inset-y-0 right-0 z-10 w-2 rounded-r-full bg-[rgba(47,107,95,0.16)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
-                          onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "end", event)}
-                          onClick={(event) => event.stopPropagation()}
-                        />
-                        <div className="flex h-full items-center justify-between gap-2">
-                          <div className="truncate font-medium text-[var(--af-text)]">
-                            {segment.track.title}
-                          </div>
+                        {timelineTicks.map((tick) => (
                           <div
-                            className={`flex shrink-0 items-center gap-1 transition ${
-                              selectedAudioTrack?.id === segment.track.id
-                                ? "opacity-100"
-                                : "opacity-0 group-hover:opacity-100"
-                            }`}
+                            key={`tick-${tick.sec}`}
+                            className="absolute bottom-0 top-0 border-l border-white/12 text-[10px] text-white/62"
+                            style={{ left: tick.sec * timelinePixelsPerSecond }}
                           >
-                            <button
-                              type="button"
-                              className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
-                              onMouseDown={(event) => event.stopPropagation()}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                updateAudioTrack(segment.track.id, {
-                                  volume: clamp(segment.track.volume - 10, 0, 200),
-                                });
-                              }}
-                            >
-                              -
-                            </button>
-                            <span className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]">
-                              {segment.track.muted ? "静音" : `${segment.track.volume}%`}
-                            </span>
-                            <button
-                              type="button"
-                              className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
-                              onMouseDown={(event) => event.stopPropagation()}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                updateAudioTrack(segment.track.id, {
-                                  volume: clamp(segment.track.volume + 10, 0, 200),
-                                });
-                              }}
-                            >
-                              +
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
-                              onMouseDown={(event) => event.stopPropagation()}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                updateAudioTrack(segment.track.id, { muted: !segment.track.muted });
-                              }}
-                            >
-                              {segment.track.muted ? "开" : "静"}
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
-                              onMouseDown={(event) => event.stopPropagation()}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                removeAudioTrack(segment.track.id);
-                              }}
-                            >
-                              删
-                            </button>
+                            <span className="ml-2 inline-block pt-2">{tick.label}</span>
                           </div>
+                        ))}
+                        <div
+                          className="pointer-events-none absolute top-1 z-[2] h-3 w-3 -translate-x-1/2 rounded-full border border-white/70 bg-[var(--af-accent)]"
+                          style={{ left: timelinePlayheadSec * timelinePixelsPerSecond }}
+                        />
+                      </div>
+
+                      <div
+                        className={`relative min-h-[146px] rounded-[18px] border border-white/8 px-2.5 py-2 transition ${
+                          timelineDropTarget === "video" ? "bg-emerald-500/10" : "bg-white/6"
+                        }`}
+                        onMouseDown={handleTimelineSurfaceMouseDown}
+                      >
+                        {currentDocument.clips.length === 0 ? (
+                          <div className="pointer-events-none flex h-[126px] items-center justify-center rounded-[16px] border border-dashed border-white/14 text-[12px] text-white/58">
+                            时间线为空：从右侧素材栏拖拽视频到这里即可加入。
+                          </div>
+                        ) : (
+                          <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+                            <SortableContext items={currentDocument.clips.map((clip) => clip.id)} strategy={horizontalListSortingStrategy}>
+                              <div className="flex min-w-max items-start gap-0">
+                                {timelineSegments.map((segment) => {
+                                  const clip = segment.clip;
+                                  const duration = Math.max(0, clip.outSec - clip.inSec);
+                                  const width = Math.max(96, duration * timelinePixelsPerSecond);
+                                  const compact = width < 240;
+                                  return (
+                                    <SortableClipBlock
+                                      key={clip.id}
+                                      clip={clip}
+                                      index={segment.index}
+                                      timelineStartSec={segment.startSec}
+                                      timelineEndSec={segment.endSec}
+                                      transitionOverlapSec={segment.overlapBeforeSec}
+                                      width={width}
+                                      compact={compact}
+                                      active={clip.id === currentDocument.selectedClipId}
+                                      playing={isProgramPlaying
+                                        ? programPlaybackIndex === segment.index
+                                        : playheadSegment?.index === segment.index}
+                                      onSelect={selectClip}
+                                      onDelete={removeClip}
+                                      onTrimMouseDown={handleTrimMouseDown}
+                                      style={{
+                                        marginLeft: segment.index === 0
+                                          ? 0
+                                          : -segment.overlapBeforeSec * timelinePixelsPerSecond,
+                                      }}
+                                    />
+                                  );
+                                })}
+                              </div>
+                            </SortableContext>
+                          </DndContext>
+                        )}
+                      </div>
+
+                      <div
+                        className={`mt-2 rounded-[18px] border px-2.5 py-2 transition ${
+                          timelineDropTarget === "audio"
+                            ? "border-emerald-300/85 bg-emerald-500/10"
+                            : "border-white/8 bg-white/5"
+                        }`}
+                        onDragOver={handleAudioTrackDragOver}
+                        onDragLeave={handleAudioTrackDragLeave}
+                        onDrop={handleAudioTrackDrop}
+                      >
+                        <div className="relative min-h-[68px]" style={{ minWidth: timelineTrackWidth }} onMouseDown={handleTimelineSurfaceMouseDown}>
+                          {audioTimelineSegments.length === 0 ? (
+                            <div className="pointer-events-none flex min-h-[52px] items-center justify-center rounded-[14px] border border-dashed border-white/12 text-[11px] text-white/56">
+                              将视频素材拖到音频轨，可快速做底噪、BGM 或对白占位。
+                            </div>
+                          ) : null}
+                          {audioTimelineSegments.map((segment) => (
+                            <div
+                              key={segment.track.id}
+                              className={`group absolute top-3 h-11 overflow-hidden rounded-[14px] border px-2 text-[10px] cursor-grab active:cursor-grabbing ${
+                                selectedAudioTrack?.id === segment.track.id
+                                  ? "border-[rgba(111,178,132,0.75)] bg-[rgba(111,178,132,0.34)] shadow-[inset_0_1px_0_rgba(255,255,255,0.15)]"
+                                  : "border-[rgba(111,178,132,0.34)] bg-[rgba(111,178,132,0.18)]"
+                              }`}
+                              style={{
+                                left: segment.startSec * timelinePixelsPerSecond,
+                                width: Math.max(84, segment.durationSec * timelinePixelsPerSecond),
+                                opacity: segment.track.muted ? 0.52 : 1,
+                              }}
+                              onMouseDown={(event) => handleAudioTrackMoveMouseDown(segment.track.id, event)}
+                              onClick={() => setSelectedAudioTrackId(segment.track.id)}
+                            >
+                              <button
+                                type="button"
+                                aria-label={`${segment.track.title} 左侧裁切手柄`}
+                                className="absolute inset-y-0 left-0 z-10 w-2 rounded-l-[14px] bg-[rgba(255,255,255,0.14)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+                                onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "start", event)}
+                                onClick={(event) => event.stopPropagation()}
+                              />
+                              <button
+                                type="button"
+                                aria-label={`${segment.track.title} 右侧裁切手柄`}
+                                className="absolute inset-y-0 right-0 z-10 w-2 rounded-r-[14px] bg-[rgba(255,255,255,0.14)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+                                onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "end", event)}
+                                onClick={(event) => event.stopPropagation()}
+                              />
+                              <div className="flex h-full items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="truncate text-[11px] font-medium text-white/92">
+                                    {segment.track.title}
+                                  </div>
+                                  <div className="truncate text-[9px] text-white/62">
+                                    {formatTimelineTime(segment.startSec)} - {formatTimelineTime(segment.endSec)}
+                                  </div>
+                                </div>
+                                <div
+                                  className={`flex shrink-0 items-center gap-1 transition ${
+                                    selectedAudioTrack?.id === segment.track.id
+                                      ? "opacity-100"
+                                      : "opacity-0 group-hover:opacity-100"
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      updateAudioTrack(segment.track.id, {
+                                        volume: clamp(segment.track.volume - 10, 0, 200),
+                                      });
+                                    }}
+                                  >
+                                    -
+                                  </button>
+                                  <span className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]">
+                                    {segment.track.muted ? "静音" : `${segment.track.volume}%`}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      updateAudioTrack(segment.track.id, {
+                                        volume: clamp(segment.track.volume + 10, 0, 200),
+                                      });
+                                    }}
+                                  >
+                                    +
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      updateAudioTrack(segment.track.id, { muted: !segment.track.muted });
+                                    }}
+                                  >
+                                    {segment.track.muted ? "开" : "静"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      removeAudioTrack(segment.track.id);
+                                    }}
+                                  >
+                                    删
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    ))}
+                    </div>
                   </div>
                 </div>
               </div>
