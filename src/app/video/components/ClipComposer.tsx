@@ -3359,6 +3359,12 @@ export function ClipComposer({
       return;
     }
 
+    const horizontalIntent = event.shiftKey
+      || Math.abs(event.deltaX) > Math.abs(event.deltaY) * 0.75;
+    if (!horizontalIntent) {
+      return;
+    }
+
     const delta = normalizeTimelineWheelDelta(event);
     if (Math.abs(delta) <= 0.1) return;
     if (viewport.scrollWidth <= viewport.clientWidth + 1) return;
