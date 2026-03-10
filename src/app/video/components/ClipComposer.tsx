@@ -3377,21 +3377,64 @@ export function ClipComposer({
                     style={{ left: timelinePlayheadSec * timelinePixelsPerSecond }}
                   />
                 </div>
+                {currentDocument.clips.length === 0 ? (
+                  <div className="flex h-24 items-center justify-center rounded-[16px] border border-dashed border-[rgba(229,221,210,0.9)] text-[12px] text-[var(--af-muted)]">
+                    时间线为空：从右侧素材栏拖拽视频到这里即可加入。
+                  </div>
+                ) : (
+                  <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+                    <SortableContext items={currentDocument.clips.map((clip) => clip.id)} strategy={horizontalListSortingStrategy}>
+                      <div className="flex min-w-max items-start gap-0">
+                        {timelineSegments.map((segment) => {
+                          const clip = segment.clip;
+                          const duration = Math.max(0, clip.outSec - clip.inSec);
+                          const width = Math.max(80, duration * timelinePixelsPerSecond);
+                          const compact = width < 220;
+                          return (
+                            <SortableClipBlock
+                              key={clip.id}
+                              clip={clip}
+                              index={segment.index}
+                              timelineStartSec={segment.startSec}
+                              timelineEndSec={segment.endSec}
+                              transitionOverlapSec={segment.overlapBeforeSec}
+                              width={width}
+                              compact={compact}
+                              active={clip.id === currentDocument.selectedClipId}
+                              playing={isProgramPlaying
+                                ? programPlaybackIndex === segment.index
+                                : playheadSegment?.index === segment.index}
+                              onSelect={selectClip}
+                              onDelete={removeClip}
+                              onTrimMouseDown={handleTrimMouseDown}
+                              style={{
+                                marginLeft: segment.index === 0
+                                  ? 0
+                                  : -segment.overlapBeforeSec * timelinePixelsPerSecond,
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
+                )}
+
                 <div
-                  className={`mb-3 rounded-[16px] border px-2 py-2 transition ${
+                  className={`mt-2 rounded-[14px] border px-2 py-1 transition ${
                     timelineDropTarget === "audio"
                       ? "border-emerald-400 bg-emerald-50/65"
-                      : "border-[rgba(229,221,210,0.9)] bg-[rgba(255,255,255,0.72)]"
+                      : "border-[rgba(229,221,210,0.82)] bg-[rgba(255,255,255,0.62)]"
                   }`}
                   onDragOver={handleAudioTrackDragOver}
                   onDragLeave={handleAudioTrackDragLeave}
                   onDrop={handleAudioTrackDrop}
                 >
-                  <div className="relative h-8" style={{ minWidth: timelineTrackWidth }}>
+                  <div className="relative h-6" style={{ minWidth: timelineTrackWidth }}>
                     {audioTimelineSegments.map((segment) => (
                       <div
                         key={segment.track.id}
-                        className={`group absolute top-1 h-5 overflow-hidden rounded-full border px-2 text-[10px] cursor-grab active:cursor-grabbing ${
+                        className={`group absolute top-0.5 h-5 overflow-hidden rounded-full border px-2 text-[10px] cursor-grab active:cursor-grabbing ${
                           selectedAudioTrack?.id === segment.track.id
                             ? "border-[rgba(47,107,95,0.5)] bg-[rgba(111,178,132,0.28)] shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]"
                             : "border-[rgba(76,139,106,0.28)] bg-[rgba(111,178,132,0.16)]"
@@ -3407,14 +3450,14 @@ export function ClipComposer({
                         <button
                           type="button"
                           aria-label={`${segment.track.title} 左侧裁切手柄`}
-                          className="absolute inset-y-1 left-0 z-10 w-2 rounded-l-[12px] bg-[rgba(47,107,95,0.16)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+                          className="absolute inset-y-0 left-0 z-10 w-2 rounded-l-full bg-[rgba(47,107,95,0.16)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
                           onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "start", event)}
                           onClick={(event) => event.stopPropagation()}
                         />
                         <button
                           type="button"
                           aria-label={`${segment.track.title} 右侧裁切手柄`}
-                          className="absolute inset-y-1 right-0 z-10 w-2 rounded-r-[12px] bg-[rgba(47,107,95,0.16)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
+                          className="absolute inset-y-0 right-0 z-10 w-2 rounded-r-full bg-[rgba(47,107,95,0.16)] opacity-0 transition group-hover:opacity-100 hover:opacity-100 cursor-ew-resize"
                           onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "end", event)}
                           onClick={(event) => event.stopPropagation()}
                         />
@@ -3486,49 +3529,6 @@ export function ClipComposer({
                     ))}
                   </div>
                 </div>
-
-                {currentDocument.clips.length === 0 ? (
-                  <div className="flex h-24 items-center justify-center rounded-[16px] border border-dashed border-[rgba(229,221,210,0.9)] text-[12px] text-[var(--af-muted)]">
-                    时间线为空：从右侧素材栏拖拽视频到这里即可加入。
-                  </div>
-                ) : (
-                  <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-                    <SortableContext items={currentDocument.clips.map((clip) => clip.id)} strategy={horizontalListSortingStrategy}>
-                      <div className="flex min-w-max items-start gap-0">
-                        {timelineSegments.map((segment) => {
-                          const clip = segment.clip;
-                          const duration = Math.max(0, clip.outSec - clip.inSec);
-                          const width = Math.max(80, duration * timelinePixelsPerSecond);
-                          const compact = width < 220;
-                          return (
-                            <SortableClipBlock
-                              key={clip.id}
-                              clip={clip}
-                              index={segment.index}
-                              timelineStartSec={segment.startSec}
-                              timelineEndSec={segment.endSec}
-                              transitionOverlapSec={segment.overlapBeforeSec}
-                              width={width}
-                              compact={compact}
-                              active={clip.id === currentDocument.selectedClipId}
-                              playing={isProgramPlaying
-                                ? programPlaybackIndex === segment.index
-                                : playheadSegment?.index === segment.index}
-                              onSelect={selectClip}
-                              onDelete={removeClip}
-                              onTrimMouseDown={handleTrimMouseDown}
-                              style={{
-                                marginLeft: segment.index === 0
-                                  ? 0
-                                  : -segment.overlapBeforeSec * timelinePixelsPerSecond,
-                              }}
-                            />
-                          );
-                        })}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                )}
               </div>
             </div>
           </div>
