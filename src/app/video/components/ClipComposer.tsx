@@ -263,6 +263,8 @@ const TIMELINE_ZOOM_STEP = 4;
 const TIMELINE_END_PADDING = 80;
 const MAX_HISTORY = 40;
 const AUTOSAVE_DELAY_MS = 1200;
+const MIN_CLIP_TRIM_DURATION_SEC = 0.12;
+const MIN_AUDIO_TRIM_DURATION_SEC = 0.15;
 const LOCAL_DRAFT_PREFIX = "agentForge.video.clipStudio";
 const TIMELINE_RULER_STEPS = [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60] as const;
 const ROUGH_CUT_TRANSITION_PRESETS: ClipTransition[] = [
@@ -403,33 +405,6 @@ function clamp(value: number, min: number, max: number): number {
 function quantize(value: number, step: number, enabled: boolean): number {
   if (!enabled) return Number(value.toFixed(3));
   return Number((Math.round(value / step) * step).toFixed(3));
-}
-
-function magnetizeToStep(
-  rawValue: number,
-  step: number,
-  enabled: boolean,
-  state: { snappedValue: number | null },
-): number {
-  if (!enabled) {
-    state.snappedValue = null;
-    return Number(rawValue.toFixed(3));
-  }
-
-  const engageThreshold = step * 0.18;
-  const releaseThreshold = step * 0.32;
-  if (state.snappedValue !== null && Math.abs(rawValue - state.snappedValue) <= releaseThreshold) {
-    return state.snappedValue;
-  }
-
-  const nearest = Number((Math.round(rawValue / step) * step).toFixed(3));
-  if (Math.abs(rawValue - nearest) <= engageThreshold) {
-    state.snappedValue = nearest;
-    return nearest;
-  }
-
-  state.snappedValue = null;
-  return Number(rawValue.toFixed(3));
 }
 
 function resolveTimelinePixelsPerSecond(
@@ -2654,11 +2629,7 @@ export function ClipComposer({
     const initialSourceInSec = baseTrack.sourceInSec;
     const initialSourceOutSec = baseTrack.sourceOutSec;
     const sourceDurationSec = baseTrack.sourceDurationSec ?? Number.MAX_SAFE_INTEGER;
-    const minDuration = Math.max(
-      0.15,
-      currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.15,
-    );
-    const trimSnapState = { snappedValue: null as number | null };
+    const minDuration = MIN_AUDIO_TRIM_DURATION_SEC;
     const pixelsPerSecond = resolveTimelinePixelsPerSecond(
       currentDocument.timelineZoom,
       fitTimelineToView,
@@ -2669,14 +2640,8 @@ export function ClipComposer({
     const applyAtClientX = (clientX: number) => {
       const deltaSec = (clientX - initialClientX) / pixelsPerSecond;
       if (edge === "start") {
-        const candidateSourceInSec = magnetizeToStep(
-          initialSourceInSec + deltaSec,
-          currentDocument.snapStepSec,
-          currentDocument.snapEnabled,
-          trimSnapState,
-        );
         const nextSourceInSec = clamp(
-          candidateSourceInSec,
+          Number((initialSourceInSec + deltaSec).toFixed(3)),
           0,
           initialSourceOutSec - minDuration,
         );
@@ -2687,14 +2652,8 @@ export function ClipComposer({
         });
         return;
       }
-      const candidateSourceOutSec = magnetizeToStep(
-        initialSourceOutSec + deltaSec,
-        currentDocument.snapStepSec,
-        currentDocument.snapEnabled,
-        trimSnapState,
-      );
       const nextSourceOutSec = clamp(
-        candidateSourceOutSec,
+        Number((initialSourceOutSec + deltaSec).toFixed(3)),
         initialSourceInSec + minDuration,
         sourceDurationSec,
       );
@@ -2748,8 +2707,6 @@ export function ClipComposer({
     window.addEventListener("mouseup", onUp);
   }, [
     currentDocument.audioTracks,
-    currentDocument.snapEnabled,
-    currentDocument.snapStepSec,
     currentDocument.timelineZoom,
     fitTimelineToView,
     isProgramPlaying,
@@ -2855,11 +2812,7 @@ export function ClipComposer({
     const initialInSec = baseClip.inSec;
     const initialOutSec = baseClip.outSec;
     const sourceDurationSec = baseClip.sourceDurationSec ?? Number.MAX_SAFE_INTEGER;
-    const minDuration = Math.max(
-      0.12,
-      currentDocument.snapEnabled ? currentDocument.snapStepSec : 0.12,
-    );
-    const trimSnapState = { snappedValue: null as number | null };
+    const minDuration = MIN_CLIP_TRIM_DURATION_SEC;
     const pixelsPerSecond = resolveTimelinePixelsPerSecond(
       currentDocument.timelineZoom,
       fitTimelineToView,
@@ -2874,14 +2827,8 @@ export function ClipComposer({
         clips: current.clips.map((clip) => {
           if (clip.id !== clipId) return clip;
           if (edge === "start") {
-            const candidateInSec = magnetizeToStep(
-              initialInSec + deltaSec,
-              currentDocument.snapStepSec,
-              currentDocument.snapEnabled,
-              trimSnapState,
-            );
             const nextInSec = clamp(
-              candidateInSec,
+              Number((initialInSec + deltaSec).toFixed(3)),
               0,
               Math.min(initialOutSec - minDuration, sourceDurationSec),
             );
@@ -2890,14 +2837,8 @@ export function ClipComposer({
               inSec: nextInSec,
             };
           }
-          const candidateOutSec = magnetizeToStep(
-            initialOutSec + deltaSec,
-            currentDocument.snapStepSec,
-            currentDocument.snapEnabled,
-            trimSnapState,
-          );
           const nextOutSec = clamp(
-            candidateOutSec,
+            Number((initialOutSec + deltaSec).toFixed(3)),
             initialInSec + minDuration,
             sourceDurationSec,
           );
@@ -2959,8 +2900,6 @@ export function ClipComposer({
   }, [
     commitDocument,
     currentDocument.clips,
-    currentDocument.snapEnabled,
-    currentDocument.snapStepSec,
     currentDocument.timelineZoom,
     fitTimelineToView,
     isProgramPlaying,
