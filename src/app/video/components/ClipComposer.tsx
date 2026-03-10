@@ -1013,7 +1013,7 @@ export function ClipComposer({
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
-      activationConstraint: { distance: 1 },
+      activationConstraint: { distance: 8 },
     }),
   );
 
@@ -3033,7 +3033,7 @@ export function ClipComposer({
             剪辑台
           </Typography.Text>
           <div className="mt-1 text-[11px] text-[var(--af-muted)]">
-            左侧只保留片段 Inspector，音频直接拖入下方时间轴
+            左侧只保留当前片段参数，右侧专注预览和时间线
           </div>
         </div>
         <Space size={8}>
@@ -3056,7 +3056,7 @@ export function ClipComposer({
         className="mb-4"
         showIcon
         type="info"
-        title="拖视频到主时间线可加片段，拖到下方音频带可只取声音。拖动时间尺会联动 Preview，转场和节目总长都按真实结果显示。"
+        title="拖素材进时间线即可编辑；时间尺、转场和节目总长都会和预览保持一致。"
       />
 
       <div className="overflow-x-auto pb-1">
@@ -3074,7 +3074,7 @@ export function ClipComposer({
                   Inspector
                 </Typography.Text>
                 <div className="mt-0.5 text-[11px] text-[var(--af-muted)]">
-                  默认展开；这里只保留当前片段的精修参数。
+                  默认展开，只保留当前片段的精修参数。
                 </div>
               </div>
 
@@ -3164,15 +3164,16 @@ export function ClipComposer({
                       <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                         原声音量
                       </Typography.Text>
-                      <InputNumber
-                        className="mt-1"
-                        min={0}
-                        max={200}
-                        value={selectedClip.audioVolume}
-                        onChange={(value) => updateSelectedClip({ audioVolume: Number(value ?? 100) })}
-                        style={{ width: "100%" }}
-                        addonAfter="%"
-                      />
+                      <Space.Compact className="mt-1 flex w-full">
+                        <InputNumber
+                          min={0}
+                          max={200}
+                          value={selectedClip.audioVolume}
+                          onChange={(value) => updateSelectedClip({ audioVolume: Number(value ?? 100) })}
+                          style={{ width: "100%" }}
+                        />
+                        <Button disabled className="!cursor-default !text-[var(--af-muted)]">%</Button>
+                      </Space.Compact>
                     </div>
 
                     <div className="mt-3 rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-white/70 p-3 text-[12px] text-[var(--af-text)]">
@@ -3183,9 +3184,6 @@ export function ClipComposer({
                 </>
               )}
 
-              <div className="rounded-[18px] border border-dashed border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.56)] px-4 py-3 text-[12px] text-[var(--af-muted)]">
-                音频不在左侧维护。把右侧视频素材直接拖到时间轴下方的音频带，就会只取声音并创建音频轨。
-              </div>
             </div>
           </Card>
 
@@ -3255,7 +3253,7 @@ export function ClipComposer({
                 时间线
               </Typography.Text>
               <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                视频按真实节目时长排布；转场重叠和音频轨都会直接反映在时间轴上。
+                视频按真实节目时长排布，转场重叠会直接反映在时间线上。
               </Typography.Text>
             </div>
             <div className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.78)] px-2.5 py-1.5">
@@ -3348,41 +3346,6 @@ export function ClipComposer({
               </div>
             </div>
 
-            {selectedAudioTrack ? (
-              <div className="mt-2 flex flex-wrap items-center gap-2 rounded-[16px] border border-[rgba(76,139,106,0.22)] bg-[rgba(111,178,132,0.08)] px-3 py-2">
-                <Tag color="green" style={{ margin: 0 }}>音频</Tag>
-                <Typography.Text style={{ fontSize: 12 }}>
-                  {selectedAudioTrack.title}
-                </Typography.Text>
-                <InputNumber
-                  size="small"
-                  min={0}
-                  max={200}
-                  value={selectedAudioTrack.volume}
-                  onChange={(value) => updateAudioTrack(selectedAudioTrack.id, { volume: Number(value ?? 100) })}
-                  style={{ width: 104 }}
-                  addonAfter="%"
-                />
-                <Typography.Text style={{ fontSize: 11, color: "var(--af-muted)" }}>
-                  静音
-                </Typography.Text>
-                <Switch
-                  size="small"
-                  checked={!selectedAudioTrack.muted}
-                  onChange={(checked) => updateAudioTrack(selectedAudioTrack.id, { muted: !checked })}
-                />
-                <Button
-                  size="small"
-                  danger
-                  type="text"
-                  icon={<DeleteOutlined />}
-                  onClick={() => removeAudioTrack(selectedAudioTrack.id)}
-                >
-                  删除
-                </Button>
-              </div>
-            ) : null}
-
             <div
               ref={timelineViewportRef}
               onWheel={handleTimelineWheel}
@@ -3424,15 +3387,15 @@ export function ClipComposer({
                   onDragLeave={handleAudioTrackDragLeave}
                   onDrop={handleAudioTrackDrop}
                 >
-                  <div className="relative h-12" style={{ minWidth: timelineTrackWidth }}>
-                    {audioTimelineSegments.length === 0 ? (
-                      <div className="flex h-full items-center justify-center text-[11px] text-[var(--af-muted)]">
-                        把右侧视频素材拖到这里，即可只取声音生成音频轨
-                      </div>
-                    ) : audioTimelineSegments.map((segment) => (
+                  <div className="relative h-8" style={{ minWidth: timelineTrackWidth }}>
+                    {audioTimelineSegments.map((segment) => (
                       <div
                         key={segment.track.id}
-                        className="group absolute top-1 h-10 overflow-hidden rounded-[12px] border border-[rgba(76,139,106,0.32)] bg-[rgba(111,178,132,0.18)] px-2 py-1 cursor-grab active:cursor-grabbing"
+                        className={`group absolute top-1 h-5 overflow-hidden rounded-full border px-2 text-[10px] cursor-grab active:cursor-grabbing ${
+                          selectedAudioTrack?.id === segment.track.id
+                            ? "border-[rgba(47,107,95,0.5)] bg-[rgba(111,178,132,0.28)] shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]"
+                            : "border-[rgba(76,139,106,0.28)] bg-[rgba(111,178,132,0.16)]"
+                        }`}
                         style={{
                           left: segment.startSec * timelinePixelsPerSecond,
                           width: Math.max(64, segment.durationSec * timelinePixelsPerSecond),
@@ -3455,11 +3418,69 @@ export function ClipComposer({
                           onMouseDown={(event) => handleAudioTrimMouseDown(segment.track.id, "end", event)}
                           onClick={(event) => event.stopPropagation()}
                         />
-                        <div className="truncate text-[11px] font-medium text-[var(--af-text)]">
-                          {segment.track.title}
-                        </div>
-                        <div className="truncate text-[10px] text-[var(--af-muted)]">
-                          {segment.track.startSec.toFixed(2)}s · {segment.durationSec.toFixed(2)}s · {segment.track.muted ? "静音" : `${segment.track.volume}%`}
+                        <div className="flex h-full items-center justify-between gap-2">
+                          <div className="truncate font-medium text-[var(--af-text)]">
+                            {segment.track.title}
+                          </div>
+                          <div
+                            className={`flex shrink-0 items-center gap-1 transition ${
+                              selectedAudioTrack?.id === segment.track.id
+                                ? "opacity-100"
+                                : "opacity-0 group-hover:opacity-100"
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
+                              onMouseDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                updateAudioTrack(segment.track.id, {
+                                  volume: clamp(segment.track.volume - 10, 0, 200),
+                                });
+                              }}
+                            >
+                              -
+                            </button>
+                            <span className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]">
+                              {segment.track.muted ? "静音" : `${segment.track.volume}%`}
+                            </span>
+                            <button
+                              type="button"
+                              className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
+                              onMouseDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                updateAudioTrack(segment.track.id, {
+                                  volume: clamp(segment.track.volume + 10, 0, 200),
+                                });
+                              }}
+                            >
+                              +
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
+                              onMouseDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                updateAudioTrack(segment.track.id, { muted: !segment.track.muted });
+                              }}
+                            >
+                              {segment.track.muted ? "开" : "静"}
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-full bg-white/88 px-1.5 text-[9px] text-[var(--af-muted)]"
+                              onMouseDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                removeAudioTrack(segment.track.id);
+                              }}
+                            >
+                              删
+                            </button>
+                          </div>
                         </div>
                       </div>
                     ))}

@@ -63,6 +63,16 @@ interface AtelierBlueprintState {
   enableSelfReview: boolean;
 }
 
+interface StrategyDecisionItem {
+  id: string;
+  label: string;
+  value: string;
+  detail: string;
+}
+
+const MANAGED_WORKFLOW_MARKER = "agent-forge-pro-workflow";
+const MANAGED_KNOWLEDGE_MARKER = "agent-forge-pro-knowledge";
+
 const TEMPLATE_PRESETS: TemplatePreset[] = [
   {
     id: "storyboard_grid_first",
@@ -262,6 +272,111 @@ function buildAtelierKnowledgeText(input: AtelierBlueprintState): string {
   return hints.join("\n");
 }
 
+function stripManagedSection(input: string, marker: string): string {
+  const start = `<!-- ${marker}:start -->`;
+  const end = `<!-- ${marker}:end -->`;
+  const startIndex = input.indexOf(start);
+  if (startIndex < 0) return input.trim();
+  const endIndex = input.indexOf(end, startIndex + start.length);
+  if (endIndex < 0) {
+    return `${input.slice(0, startIndex)}${input.slice(startIndex + start.length)}`.trim();
+  }
+  return `${input.slice(0, startIndex)}${input.slice(endIndex + end.length)}`.trim();
+}
+
+function upsertManagedSection(
+  input: string,
+  marker: string,
+  title: string,
+  body: string,
+): string {
+  const manual = stripManagedSection(input, marker);
+  const cleanBody = body.trim();
+  if (cleanBody.length === 0) return manual;
+  const managedBlock = [
+    `<!-- ${marker}:start -->`,
+    title,
+    cleanBody,
+    `<!-- ${marker}:end -->`,
+  ].join("\n");
+  return [manual, managedBlock].filter((item) => item.length > 0).join("\n\n").trim();
+}
+
+function buildStrategyDecisionItems(input: AtelierBlueprintState): StrategyDecisionItem[] {
+  const opening = input.storyboardDensity === "grid_3x3"
+    ? {
+      value: "先广泛探索",
+      detail: "先做九宫格，优先扩大镜头候选，再收敛。",
+    }
+    : input.storyboardDensity === "grid_2x2"
+      ? {
+        value: "先快速比稿",
+        detail: "先做四宫格，快速比较镜头方向和节奏。",
+      }
+      : {
+        value: "先单点确认",
+        detail: "先用单张确认镜头，不让前期探索过重。",
+      };
+
+  const route = input.referenceRoute === "first_last_frame"
+    ? {
+      value: "首尾帧",
+      detail: "只有起点和终点都明确时，才锁死首尾帧。",
+    }
+    : input.referenceRoute === "first_frame"
+      ? {
+        value: "首帧优先",
+        detail: "默认先稳住起始构图，不轻易引入尾帧约束。",
+      }
+      : input.referenceRoute === "mixed_refs"
+        ? {
+          value: "混合参考",
+          detail: "图片和视频参考一起用，不退回纯 prompt。",
+        }
+        : {
+          value: "自动判路",
+          detail: "默认先首帧；尾点明确才升级到首尾帧。",
+        };
+
+  const focusTokens = [
+    input.characterPriority ? "角色" : null,
+    input.emptyShotPriority ? "空镜" : null,
+    input.dialogueFirst ? "对白" : null,
+    input.multiClip ? "多候选粗剪" : null,
+  ].filter((item): item is string => item !== null);
+
+  return [
+    {
+      id: "opening",
+      label: "起手方式",
+      value: opening.value,
+      detail: opening.detail,
+    },
+    {
+      id: "route",
+      label: "默认视频路线",
+      value: route.value,
+      detail: route.detail,
+    },
+    {
+      id: "focus",
+      label: "这轮重心",
+      value: focusTokens.length > 0 ? focusTokens.join(" / ") : "均衡推进",
+      detail: focusTokens.length > 0
+        ? "会优先照顾这些维度，不会平均撒网。"
+        : "没有额外偏向，按素材缺口动态补齐。",
+    },
+    {
+      id: "gate",
+      label: "守门方式",
+      value: input.checkpointAlignmentRequired ? "先对齐再推进" : "直接推进",
+      detail: input.enableSelfReview
+        ? "关键阶段会自检，必要时主动补素材或换路径。"
+        : "不过度插入 review，优先保持推进速度。",
+    },
+  ];
+}
+
 function workflowSnippetForPath(pathId: string): string {
   switch (pathId) {
     case "path.storyboard_density.grid_3x3":
@@ -309,9 +424,17 @@ export function ProSettingsPanel({
   layout = "inline",
 }: ProSettingsPanelProps) {
   const { message } = App.useApp();
+  const initialDraftConfig = useMemo<VideoProConfig>(
+    () => ({
+      ...config,
+      workflowTemplate: stripManagedSection(config.workflowTemplate, MANAGED_WORKFLOW_MARKER),
+      customKnowledge: stripManagedSection(config.customKnowledge, MANAGED_KNOWLEDGE_MARKER),
+    }),
+    [config],
+  );
   const [activeTab, setActiveTab] = useState("atelier");
   const [draftMemoryUser, setDraftMemoryUser] = useState(memoryUser);
-  const [draftConfig, setDraftConfig] = useState<VideoProConfig>(config);
+  const [draftConfig, setDraftConfig] = useState<VideoProConfig>(initialDraftConfig);
   const [atelier, setAtelier] = useState<AtelierBlueprintState>(() => buildAtelierBlueprintFromConfig(config));
   const [isClearingMemory, setIsClearingMemory] = useState(false);
   const [memorySummary, setMemorySummary] = useState<MemoryRecommendations | null>(null);
@@ -323,13 +446,55 @@ export function ProSettingsPanel({
     if (!active) return;
     setActiveTab("atelier");
     setDraftMemoryUser(memoryUser);
-    setDraftConfig(config);
+    setDraftConfig(initialDraftConfig);
     setAtelier(buildAtelierBlueprintFromConfig(config));
-  }, [active, config, memoryUser]);
+  }, [active, config, initialDraftConfig, memoryUser]);
+
+  const effectiveWorkflowTemplate = useMemo(
+    () => upsertManagedSection(
+      draftConfig.workflowTemplate.trim(),
+      MANAGED_WORKFLOW_MARKER,
+      "专业模式自动执行路线：",
+      buildAtelierWorkflowText(atelier),
+    ),
+    [atelier, draftConfig.workflowTemplate],
+  );
+
+  const effectiveCustomKnowledge = useMemo(
+    () => upsertManagedSection(
+      draftConfig.customKnowledge.trim(),
+      MANAGED_KNOWLEDGE_MARKER,
+      "专业模式自动长期原则：",
+      buildAtelierKnowledgeText(atelier),
+    ),
+    [atelier, draftConfig.customKnowledge],
+  );
+
+  const effectiveConfig = useMemo<VideoProConfig>(
+    () => ({
+      ...draftConfig,
+      workflowTemplate: effectiveWorkflowTemplate,
+      customKnowledge: effectiveCustomKnowledge,
+      checkpointAlignmentRequired: atelier.checkpointAlignmentRequired,
+      enableSelfReview: atelier.enableSelfReview,
+    }),
+    [
+      atelier.checkpointAlignmentRequired,
+      atelier.enableSelfReview,
+      draftConfig,
+      effectiveCustomKnowledge,
+      effectiveWorkflowTemplate,
+    ],
+  );
 
   const pathSignals = useMemo(
-    () => derivePathSignals(draftConfig),
-    [draftConfig],
+    () => derivePathSignals(effectiveConfig),
+    [effectiveConfig],
+  );
+
+  const strategyDecisionItems = useMemo(
+    () => buildStrategyDecisionItems(atelier),
+    [atelier],
   );
 
   useEffect(() => {
@@ -400,9 +565,9 @@ export function ProSettingsPanel({
     onApply({
       memoryUser: nextMemoryUser,
       config: {
-        ...draftConfig,
-        customKnowledge: draftConfig.customKnowledge.trim(),
-        workflowTemplate: draftConfig.workflowTemplate.trim(),
+        ...effectiveConfig,
+        customKnowledge: effectiveConfig.customKnowledge.trim(),
+        workflowTemplate: effectiveConfig.workflowTemplate.trim(),
       },
     });
     void message.success("专业模式配置已更新");
@@ -451,30 +616,6 @@ export function ProSettingsPanel({
     void message.success(`已切到策略：${preset.title}`);
   };
 
-  const applyAtelierTemplate = (mode: "replace" | "append") => {
-    const workflowText = buildAtelierWorkflowText(atelier);
-    setDraftConfig((prev) => ({
-      ...prev,
-      workflowTemplate: mode === "replace"
-        ? workflowText
-        : [prev.workflowTemplate.trim(), workflowText].filter((item) => item.length > 0).join("\n"),
-      checkpointAlignmentRequired: atelier.checkpointAlignmentRequired,
-      enableSelfReview: atelier.enableSelfReview,
-    }));
-    void message.success(mode === "replace" ? "策略蓝图已写入模板" : "策略蓝图已叠加到模板");
-  };
-
-  const applyAtelierKnowledge = () => {
-    const knowledgeText = buildAtelierKnowledgeText(atelier);
-    setDraftConfig((prev) => ({
-      ...prev,
-      customKnowledge: [prev.customKnowledge.trim(), knowledgeText].filter((item) => item.length > 0).join("\n"),
-      checkpointAlignmentRequired: atelier.checkpointAlignmentRequired,
-      enableSelfReview: atelier.enableSelfReview,
-    }));
-    void message.success("策略偏好已叠加到长期知识层");
-  };
-
   const applyRecommendedPathSnippet = (pathId: string) => {
     const snippet = workflowSnippetForPath(pathId);
     setDraftConfig((prev) => ({
@@ -505,14 +646,27 @@ export function ProSettingsPanel({
       items={[
         {
           key: "atelier",
-          label: "Strategy",
+          label: "决策",
           children: (
             <div className="space-y-3">
               <div className="rounded-[18px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.74)] px-4 py-3 text-[12px] text-[var(--af-muted)]">
-                先把这一轮策略定清：探索密度、参考路线和 review gate 在这里一次收口。
+                这里决定的是这一轮会怎么开局、默认走哪条视频路线、什么时候停下来检查。保存后会自动写进真正生效的策略层。
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                {strategyDecisionItems.map((item) => (
+                  <Card key={item.id} size="small" className="!rounded-[18px]">
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                      {item.label}
+                    </Typography.Text>
+                    <div className="mt-2 text-[16px] font-semibold text-[var(--af-text)]">{item.value}</div>
+                    <Typography.Paragraph style={{ marginTop: 8, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
+                      {item.detail}
+                    </Typography.Paragraph>
+                  </Card>
+                ))}
               </div>
               <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>Quick Setups</Typography.Text>
+                <Typography.Text strong>常用打法</Typography.Text>
                 <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                   {STRATEGY_PRESETS.map((preset) => (
                     <div key={preset.id} className="rounded-[16px] border border-[rgba(229,221,210,0.9)] bg-[rgba(255,253,249,0.72)] px-3 py-3">
@@ -529,7 +683,7 @@ export function ProSettingsPanel({
               </Card>
 
               <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>Storyboard Density</Typography.Text>
+                <Typography.Text strong>起手方式</Typography.Text>
                 <div className="mt-2">
                   <Segmented<StoryboardDensityPreset>
                     block
@@ -545,7 +699,7 @@ export function ProSettingsPanel({
               </Card>
 
               <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>Reference Route</Typography.Text>
+                <Typography.Text strong>默认视频路线</Typography.Text>
                 <Select<ReferenceRoutePreset>
                   className="mt-2"
                   value={atelier.referenceRoute}
@@ -558,7 +712,7 @@ export function ProSettingsPanel({
                   ]}
                 />
                 <Typography.Paragraph style={{ marginTop: 10, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
-                  这里定义的是默认倾向，不是死规则。真正执行时仍允许 Agent 根据素材缺口做 review 和切路。
+                  这定义的是默认倾向，不是死规则。真正执行时仍允许 Agent 根据素材缺口补素材、回退或切路。
                 </Typography.Paragraph>
               </Card>
 
@@ -628,16 +782,21 @@ export function ProSettingsPanel({
 
               <Card size="small" className="!rounded-[18px]">
                 <div className="flex items-center justify-between gap-3">
-                  <Typography.Text strong>Strategy Preview</Typography.Text>
-                  <Tag color="processing" style={{ margin: 0 }}>Prompt-ready</Tag>
+                  <Typography.Text strong>保存后会自动写入的执行策略</Typography.Text>
+                  <Tag color="processing" style={{ margin: 0 }}>自动生效</Tag>
                 </div>
-                <pre className="mt-3 overflow-auto rounded-[16px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.78)] px-3 py-3 text-[11px] leading-relaxed text-[var(--af-text)]">
-                  {buildAtelierWorkflowText(atelier)}
-                </pre>
+                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <pre className="overflow-auto rounded-[16px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.78)] px-3 py-3 text-[11px] leading-relaxed text-[var(--af-text)]">
+                    {buildAtelierWorkflowText(atelier)}
+                  </pre>
+                  <pre className="overflow-auto rounded-[16px] border border-[rgba(229,221,210,0.92)] bg-[rgba(255,253,249,0.78)] px-3 py-3 text-[11px] leading-relaxed text-[var(--af-text)]">
+                    {buildAtelierKnowledgeText(atelier)}
+                  </pre>
+                </div>
               </Card>
 
               <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>根据当前信号推荐的路径</Typography.Text>
+                <Typography.Text strong>系统建议路径</Typography.Text>
                 {isLoadingPaths ? (
                   <div className="flex items-center justify-center py-6"><Spin size="small" /></div>
                 ) : !pathSummary || pathSummary.recommendations.length === 0 ? (
@@ -665,11 +824,11 @@ export function ProSettingsPanel({
         },
         {
           key: "templates",
-          label: "Workflow",
+          label: "流程",
           children: (
             <div className="space-y-3">
               <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>默认工作流模板</Typography.Text>
+                <Typography.Text strong>手工流程补充</Typography.Text>
                 <Input.TextArea
                   className="mt-2"
                   autoSize={{ minRows: 8, maxRows: 16 }}
@@ -677,6 +836,9 @@ export function ProSettingsPanel({
                   onChange={(event) => setDraftConfig((prev) => ({ ...prev, workflowTemplate: event.target.value }))}
                   placeholder="例如：先四宫格分镜，再角色立绘，再首帧视频验证动作，稳定后进入多候选粗剪。"
                 />
+                <Typography.Paragraph style={{ marginTop: 10, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
+                  这里写的是你额外想补的人工流程说明；上面的策略会在保存时自动合并进去。
+                </Typography.Paragraph>
               </Card>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 {TEMPLATE_PRESETS.map((preset) => (
@@ -696,16 +858,16 @@ export function ProSettingsPanel({
         },
         {
           key: "knowledge",
-          label: "Knowledge",
+          label: "原则",
           children: (
             <div className="space-y-3">
               <Alert
                 showIcon
                 type="info"
-                title="这里定义的是长期知识叠层，不是单轮 prompt。适合写审美边界、禁忌和习惯。"
+                title="这里定义的是长期原则，不是单轮 prompt。适合写审美边界、禁忌和习惯。"
               />
               <Card size="small" className="!rounded-[18px]">
-                <Typography.Text strong>长期知识补充</Typography.Text>
+                <Typography.Text strong>手工长期补充</Typography.Text>
                 <Input.TextArea
                   className="mt-2"
                   autoSize={{ minRows: 8, maxRows: 16 }}
@@ -713,6 +875,9 @@ export function ProSettingsPanel({
                   onChange={(event) => setDraftConfig((prev) => ({ ...prev, customKnowledge: event.target.value }))}
                   placeholder="例如：更偏奶油暖调，不要廉价广告感；遇到叙事镜头时优先补空镜和呼吸镜头；角色镜头不要过多机位抖动。"
                 />
+                <Typography.Paragraph style={{ marginTop: 10, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
+                  这里写的是长期审美和禁忌；上面的策略原则会在保存时自动合并进去。
+                </Typography.Paragraph>
               </Card>
               <Card size="small" className="!rounded-[18px]">
                 <Typography.Text strong>知识写法建议</Typography.Text>
@@ -728,7 +893,7 @@ export function ProSettingsPanel({
         },
         {
           key: "memory",
-          label: "Memory",
+          label: "记忆",
           children: (
             <div className="space-y-3">
               <Card size="small" className="!rounded-[18px]">
@@ -820,7 +985,7 @@ export function ProSettingsPanel({
         },
         {
           key: "capabilities",
-          label: "Capabilities",
+          label: "能力",
           children: (
             <div className="space-y-3">
               <Card size="small" className="!rounded-[18px]">
@@ -866,14 +1031,11 @@ export function ProSettingsPanel({
       <div className="min-w-0 flex-1">
         <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--af-muted)]">当前策略</div>
         <div className="mt-2">{strategySummary}</div>
+        <Typography.Paragraph style={{ marginTop: 10, marginBottom: 0, fontSize: 12, color: "var(--af-muted)" }}>
+          保存时会自动把这套策略编译进实际生效的 workflow / knowledge 层，不需要额外再点“写入模板”或“写入知识”。
+        </Typography.Paragraph>
       </div>
       <Space size={8}>
-        <Button size="small" onClick={() => applyAtelierTemplate("append")}>
-          叠加到模板
-        </Button>
-        <Button size="small" onClick={applyAtelierKnowledge}>
-          写入知识
-        </Button>
         {onClose ? <Button size="small" onClick={onClose}>收起</Button> : null}
         <Button size="small" type="primary" onClick={handleApply}>保存专业模式</Button>
       </Space>
