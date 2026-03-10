@@ -236,6 +236,14 @@ interface SortableClipBlockProps {
   ) => void;
 }
 
+interface ClipFrameThumbnailProps {
+  url: string | null;
+  inSec: number;
+  title: string;
+  compact: boolean;
+  active: boolean;
+}
+
 export interface ClipComposerProps {
   sequenceId: string | null;
   resources: DomainResources | null;
@@ -579,6 +587,10 @@ function normalizeTimelineWheelDelta(event: WheelEvent): number {
   return rawDelta * modeScale * fallbackScale;
 }
 
+function clipFrameThumbnailKey(url: string, inSec: number): string {
+  return `${url}|${inSec.toFixed(3)}`;
+}
+
 function transitionPreviewDurationSec(transition: ClipTransition): number {
   switch (transition) {
     case "fade":
@@ -820,6 +832,103 @@ function buildDocumentFromClipPlan(
   };
 }
 
+function ClipFrameThumbnail({
+  url,
+  inSec,
+  title,
+  compact,
+  active,
+}: ClipFrameThumbnailProps) {
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isVisible, setIsVisible] = useState(active || typeof IntersectionObserver === "undefined");
+  const canLoad = Boolean(url) && (active || isVisible);
+
+  useEffect(() => {
+    if (canLoad) return;
+    const node = frameRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting) {
+        setIsVisible(true);
+        observer.disconnect();
+      }
+    }, {
+      threshold: 0.01,
+    });
+
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, [canLoad]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !canLoad || !url) return;
+
+    const pauseVideo = () => {
+      video.pause();
+    };
+
+    const syncFrame = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const desired = Math.max(inSec, 0.04);
+      const upperBound = duration > 0 ? Math.max(0, duration - 0.05) : desired;
+      const target = clamp(desired, 0, upperBound);
+      if (Math.abs(video.currentTime - target) > 0.03) {
+        try {
+          video.currentTime = target;
+        } catch {
+          // ignore seek failures from unsupported streams
+        }
+      }
+    };
+
+    video.addEventListener("loadedmetadata", syncFrame);
+    video.addEventListener("loadeddata", pauseVideo);
+    video.addEventListener("seeked", pauseVideo);
+
+    if (video.readyState >= 1) {
+      syncFrame();
+    }
+
+    return () => {
+      video.removeEventListener("loadedmetadata", syncFrame);
+      video.removeEventListener("loadeddata", pauseVideo);
+      video.removeEventListener("seeked", pauseVideo);
+    };
+  }, [canLoad, inSec, url]);
+
+  return (
+    <div
+      ref={frameRef}
+      className={`relative shrink-0 overflow-hidden rounded-[9px] border border-[rgba(180,170,158,0.24)] bg-[rgba(244,239,232,0.82)] ${
+        compact ? "h-8 w-10" : "h-10 w-14"
+      }`}
+    >
+      {canLoad && url ? (
+        <video
+          ref={videoRef}
+          src={url}
+          muted
+          playsInline
+          preload="metadata"
+          tabIndex={-1}
+          className="h-full w-full bg-black object-cover"
+          aria-label={`${title} 首帧预览`}
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center bg-[linear-gradient(135deg,rgba(214,222,226,0.52),rgba(244,239,232,0.82))] text-[10px] font-medium text-[var(--af-muted)]">
+          {title.trim().slice(0, 1) || "#"}
+        </div>
+      )}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-4 bg-gradient-to-t from-black/18 to-transparent" />
+    </div>
+  );
+}
+
 function SortableClipBlockBase({
   clip,
   index,
@@ -856,7 +965,7 @@ function SortableClipBlockBase({
   };
   const clipDuration = clipDurationSec(clip);
   const compact = width < 152;
-  const tiny = width < 112;
+  const tiny = width < 96;
 
   return (
     <div
@@ -923,6 +1032,16 @@ function SortableClipBlockBase({
           >
             <HolderOutlined className="text-[10px]" />
           </button>
+          {!tiny ? (
+            <ClipFrameThumbnail
+              key={clip.url ? clipFrameThumbnailKey(clip.url, clip.inSec) : `${clip.id}-thumb`}
+              url={clip.url}
+              inSec={clip.inSec}
+              title={clip.title}
+              compact={compact}
+              active={active}
+            />
+          ) : null}
           <div className="min-w-0 flex-1">
             <div className="truncate text-[11px] font-medium text-[var(--af-text)]">
               {tiny ? `${index + 1}. ${clipDuration.toFixed(1)}s` : `${index + 1}. ${clip.title}`}
@@ -1029,6 +1148,7 @@ export function ClipComposer({
   const programPreloadVideoRef = useRef<HTMLVideoElement | null>(null);
   const audioPreviewRefs = useRef(new Map<string, HTMLAudioElement>());
   const timelineViewportRef = useRef<HTMLDivElement | null>(null);
+  const timelineContentRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const programAdvancingRef = useRef(false);
   const lastPersistedSnapshotRef = useRef("");
@@ -1063,6 +1183,7 @@ export function ClipComposer({
   const [timelinePlayheadSec, setTimelinePlayheadSec] = useState(0);
   const [timelineDropTarget, setTimelineDropTarget] = useState<"video" | "audio" | null>(null);
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
+  const [timelineScrollWidth, setTimelineScrollWidth] = useState(0);
   const [fitTimelineToView, setFitTimelineToView] = useState(false);
   const [selectedAudioTrackId, setSelectedAudioTrackId] = useState<string | null>(null);
   const [activePreviewTransition, setActivePreviewTransition] = useState<ActivePreviewTransition | null>(null);
@@ -2891,7 +3012,13 @@ export function ClipComposer({
     ),
     [timelinePixelsPerSecond, timelineViewportWidth, totalDuration],
   );
-  const timelineScrollableWidth = timelineTrackWidth + TIMELINE_END_PADDING;
+  const timelineEndPadding = timelineViewportWidth > 0 && timelineTrackWidth <= timelineViewportWidth - 8
+    ? 0
+    : TIMELINE_END_PADDING;
+  const timelineScrollableWidth = timelineTrackWidth + timelineEndPadding;
+  const effectiveTimelineScrollableWidth = timelineScrollWidth > 0
+    ? timelineScrollWidth
+    : timelineScrollableWidth;
   const timelineTicks = useMemo(
     () => buildTimelineTicks(totalDuration, timelinePixelsPerSecond),
     [timelinePixelsPerSecond, totalDuration],
@@ -2899,8 +3026,8 @@ export function ClipComposer({
   const displayedTimelineZoom = fitTimelineToView
     ? Math.round(clamp(timelinePixelsPerSecond / 1.05, MIN_TIMELINE_ZOOM, MAX_TIMELINE_ZOOM))
     : currentDocument.timelineZoom;
-  const overviewPlayheadPercent = timelineScrollableWidth > 0
-    ? clamp(((timelinePlayheadSec * timelinePixelsPerSecond) / timelineScrollableWidth) * 100, 0, 100)
+  const overviewPlayheadPercent = effectiveTimelineScrollableWidth > 0
+    ? clamp(((timelinePlayheadSec * timelinePixelsPerSecond) / effectiveTimelineScrollableWidth) * 100, 0, 100)
     : 0;
   const timelineZoomLabel = fitTimelineToView
     ? "适配"
@@ -2911,11 +3038,12 @@ export function ClipComposer({
     const viewport = timelineViewportRef.current;
     if (!overviewWindow || !viewport) return;
 
-    const leftPercent = timelineScrollableWidth > 0
-      ? clamp((viewport.scrollLeft / timelineScrollableWidth) * 100, 0, 100)
+    const scrollableWidth = Math.max(viewport.scrollWidth, timelineScrollableWidth, 1);
+    const leftPercent = scrollableWidth > 0
+      ? clamp((viewport.scrollLeft / scrollableWidth) * 100, 0, 100)
       : 0;
-    const widthPercent = timelineScrollableWidth > 0
-      ? clamp((viewport.clientWidth / timelineScrollableWidth) * 100, 0, 100)
+    const widthPercent = scrollableWidth > 0
+      ? clamp((viewport.clientWidth / scrollableWidth) * 100, 0, 100)
       : 100;
 
     overviewWindow.style.left = `${leftPercent}%`;
@@ -2926,6 +3054,7 @@ export function ClipComposer({
     const viewport = timelineViewportRef.current;
     if (!viewport) return;
     setTimelineViewportWidth((current) => (current === viewport.clientWidth ? current : viewport.clientWidth));
+    setTimelineScrollWidth((current) => (current === viewport.scrollWidth ? current : viewport.scrollWidth));
     timelineScrollLeftRef.current = viewport.scrollLeft;
     syncTimelineOverviewWindow();
   }, [syncTimelineOverviewWindow]);
@@ -2941,22 +3070,33 @@ export function ClipComposer({
     const observer = new ResizeObserver(() => {
       syncTimelineViewport();
     });
+    const content = timelineContentRef.current;
 
     viewport.addEventListener("scroll", handleScroll, { passive: true });
     observer.observe(viewport);
+    if (content) {
+      observer.observe(content);
+    }
+    const rafId = window.requestAnimationFrame(() => {
+      syncTimelineViewport();
+    });
 
     return () => {
+      window.cancelAnimationFrame(rafId);
       viewport.removeEventListener("scroll", handleScroll);
       observer.disconnect();
     };
-  }, [syncTimelineViewport]);
+  }, [syncTimelineViewport, timelineScrollableWidth]);
 
   useEffect(() => {
     if (!fitTimelineToView) return;
     const viewport = timelineViewportRef.current;
     if (!viewport) return;
     viewport.scrollLeft = 0;
-  }, [fitTimelineToView, timelineTrackWidth]);
+    window.requestAnimationFrame(() => {
+      syncTimelineViewport();
+    });
+  }, [fitTimelineToView, syncTimelineViewport, timelineTrackWidth]);
 
   useEffect(() => {
     syncTimelineOverviewWindow();
@@ -2965,9 +3105,9 @@ export function ClipComposer({
   const scrollTimelineViewportTo = useCallback((nextScrollLeft: number) => {
     const viewport = timelineViewportRef.current;
     if (!viewport) return;
-    const maxScrollLeft = Math.max(0, timelineScrollableWidth - viewport.clientWidth);
+    const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
     viewport.scrollLeft = clamp(nextScrollLeft, 0, maxScrollLeft);
-  }, [timelineScrollableWidth]);
+  }, []);
 
   const setTimelineZoomLevel = useCallback((
     nextZoom: number,
@@ -3079,9 +3219,9 @@ export function ClipComposer({
     event.preventDefault();
     const bounds = event.currentTarget.getBoundingClientRect();
     const ratio = clamp((event.clientX - bounds.left) / Math.max(bounds.width, 1), 0, 1);
-    const targetScrollLeft = (ratio * timelineScrollableWidth) - (timelineViewportWidth / 2);
+    const targetScrollLeft = (ratio * effectiveTimelineScrollableWidth) - (timelineViewportWidth / 2);
     scrollTimelineViewportTo(targetScrollLeft);
-  }, [scrollTimelineViewportTo, timelineScrollableWidth, timelineViewportWidth]);
+  }, [effectiveTimelineScrollableWidth, scrollTimelineViewportTo, timelineViewportWidth]);
 
   const handleTimelineOverviewWindowMouseDown = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
@@ -3107,7 +3247,7 @@ export function ClipComposer({
         if (!session || nextClientX === null) return;
         timelineOverviewPendingClientXRef.current = null;
         const deltaRatio = (nextClientX - session.startClientX) / Math.max(session.overviewWidth, 1);
-        scrollTimelineViewportTo(session.startScrollLeft + (deltaRatio * timelineScrollableWidth));
+        scrollTimelineViewportTo(session.startScrollLeft + (deltaRatio * effectiveTimelineScrollableWidth));
       });
     };
     const onUp = () => {
@@ -3121,7 +3261,7 @@ export function ClipComposer({
         timelineOverviewPendingClientXRef.current = null;
         if (session) {
           const deltaRatio = (nextClientX - session.startClientX) / Math.max(session.overviewWidth, 1);
-          scrollTimelineViewportTo(session.startScrollLeft + (deltaRatio * timelineScrollableWidth));
+          scrollTimelineViewportTo(session.startScrollLeft + (deltaRatio * effectiveTimelineScrollableWidth));
         }
       }
       timelineOverviewDragSessionRef.current = null;
@@ -3131,7 +3271,7 @@ export function ClipComposer({
 
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-  }, [scrollTimelineViewportTo, timelineScrollableWidth]);
+  }, [effectiveTimelineScrollableWidth, scrollTimelineViewportTo]);
 
   const handleTimelineViewportMouseDownCapture = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (event.button !== 1) return;
@@ -3713,11 +3853,11 @@ export function ClipComposer({
                 <div className="relative h-7">
                   <div className="absolute inset-x-1 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-[rgba(214,222,226,0.42)]">
                     {timelineSegments.map((segment) => {
-                      const left = timelineScrollableWidth > 0
-                        ? (segment.startSec * timelinePixelsPerSecond / timelineScrollableWidth) * 100
+                      const left = effectiveTimelineScrollableWidth > 0
+                        ? (segment.startSec * timelinePixelsPerSecond / effectiveTimelineScrollableWidth) * 100
                         : 0;
-                      const width = timelineScrollableWidth > 0
-                        ? Math.max((segment.durationSec * timelinePixelsPerSecond / timelineScrollableWidth) * 100, 0.8)
+                      const width = effectiveTimelineScrollableWidth > 0
+                        ? Math.max((segment.durationSec * timelinePixelsPerSecond / effectiveTimelineScrollableWidth) * 100, 0.8)
                         : 100;
                       return (
                         <div
@@ -3731,11 +3871,11 @@ export function ClipComposer({
                   {audioTimelineSegments.length > 0 ? (
                     <div className="absolute inset-x-1 bottom-[3px] h-px bg-[rgba(47,107,95,0.12)]">
                       {audioTimelineSegments.map((segment) => {
-                        const left = timelineScrollableWidth > 0
-                          ? (segment.startSec * timelinePixelsPerSecond / timelineScrollableWidth) * 100
+                        const left = effectiveTimelineScrollableWidth > 0
+                          ? (segment.startSec * timelinePixelsPerSecond / effectiveTimelineScrollableWidth) * 100
                           : 0;
-                        const width = timelineScrollableWidth > 0
-                          ? Math.max((segment.durationSec * timelinePixelsPerSecond / timelineScrollableWidth) * 100, 1)
+                        const width = effectiveTimelineScrollableWidth > 0
+                          ? Math.max((segment.durationSec * timelinePixelsPerSecond / effectiveTimelineScrollableWidth) * 100, 1)
                           : 100;
                         return (
                           <div
@@ -3785,7 +3925,7 @@ export function ClipComposer({
                         : "border-[rgba(124,114,102,0.14)] bg-[rgba(255,255,255,0.72)]"
                     } ${isTimelinePanning ? "cursor-grabbing" : "cursor-default"}`}
                   >
-                    <div className="relative pb-0.5" style={{ minWidth: timelineScrollableWidth, paddingRight: TIMELINE_END_PADDING }}>
+                    <div ref={timelineContentRef} className="relative pb-0.5" style={{ minWidth: timelineScrollableWidth, paddingRight: timelineEndPadding }}>
                       {timelineTicks.map((tick) => (
                         <div
                           key={`grid-${tick.sec}`}
@@ -3833,7 +3973,7 @@ export function ClipComposer({
                                 {timelineSegments.map((segment) => {
                                   const clip = segment.clip;
                                   const duration = Math.max(0, clip.outSec - clip.inSec);
-                                  const width = Math.max(84, duration * timelinePixelsPerSecond);
+                                  const width = Math.max(96, duration * timelinePixelsPerSecond);
                                   return (
                                     <SortableClipBlock
                                       key={clip.id}
@@ -3881,7 +4021,7 @@ export function ClipComposer({
                     onDragLeave={handleAudioTrackDragLeave}
                     onDrop={handleAudioTrackDrop}
                   >
-                    <div className="relative min-h-[42px]" style={{ minWidth: timelineScrollableWidth, paddingRight: TIMELINE_END_PADDING }} onMouseDown={handleTimelineSurfaceMouseDown}>
+                    <div className="relative min-h-[42px]" style={{ minWidth: timelineScrollableWidth, paddingRight: timelineEndPadding }} onMouseDown={handleTimelineSurfaceMouseDown}>
                       {audioTimelineSegments.length === 0 ? (
                         <div className="pointer-events-none flex min-h-[30px] items-center justify-center rounded-[10px] border border-dashed border-[rgba(124,114,102,0.16)] text-[11px] text-[var(--af-muted)]">
                           将视频素材拖到音频轨，可快速做底噪、BGM 或对白占位。
