@@ -964,8 +964,19 @@ function SortableClipBlockBase({
     ...blockStyle,
   };
   const clipDuration = clipDurationSec(clip);
+  const ultraTiny = width < 64;
   const compact = width < 152;
   const tiny = width < 96;
+  const showFrameThumbnail = width >= 168;
+  const transitionTintWidth = transitionOverlapSec > 0
+    ? Math.max(
+      0,
+      Math.min(
+        Math.max(width - 8, 0),
+        Math.max(10, width * (transitionOverlapSec / Math.max(clipDuration, 0.001))),
+      ),
+    )
+    : 0;
 
   return (
     <div
@@ -989,7 +1000,7 @@ function SortableClipBlockBase({
         <div
           className="pointer-events-none absolute inset-y-0 left-0 z-[1] rounded-l-[12px] bg-[linear-gradient(90deg,rgba(47,107,95,0.14),rgba(47,107,95,0.03))]"
           style={{
-            width: `${Math.min(width - 8, Math.max(10, width * (transitionOverlapSec / Math.max(clipDuration, 0.001))))}px`,
+            width: `${transitionTintWidth}px`,
           }}
         />
       ) : null}
@@ -1012,12 +1023,14 @@ function SortableClipBlockBase({
         onClick={(event) => event.stopPropagation()}
       />
       <div className={`w-1.5 shrink-0 ${active ? "bg-[var(--af-brand)]" : timelineClipToneClass(clip.transition)}`} />
-      <div className="relative z-[2] flex min-w-0 flex-1 flex-col px-2.5 py-2">
-        <div className="flex min-w-0 items-center gap-1.5">
+      <div className={`relative z-[2] flex min-w-0 flex-1 flex-col ${ultraTiny ? "px-1.5 py-1.5" : "px-2.5 py-2"}`}>
+        <div className={`flex min-w-0 items-center ${ultraTiny ? "gap-1" : "gap-1.5"}`}>
           <button
             type="button"
             aria-label={`${clip.title} 拖拽排序`}
-            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[var(--af-muted)] touch-none ${
+            className={`flex shrink-0 items-center justify-center rounded-full border text-[var(--af-muted)] touch-none ${
+              ultraTiny ? "h-4 w-4" : "h-5 w-5"
+            } ${
               active
                 ? "border-[rgba(47,107,95,0.2)] bg-[rgba(47,107,95,0.08)]"
                 : "border-[rgba(180,170,158,0.24)] bg-white/82"
@@ -1032,7 +1045,7 @@ function SortableClipBlockBase({
           >
             <HolderOutlined className="text-[10px]" />
           </button>
-          {!tiny ? (
+          {showFrameThumbnail ? (
             <ClipFrameThumbnail
               key={clip.url ? clipFrameThumbnailKey(clip.url, clip.inSec) : `${clip.id}-thumb`}
               url={clip.url}
@@ -1043,29 +1056,31 @@ function SortableClipBlockBase({
             />
           ) : null}
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[11px] font-medium text-[var(--af-text)]">
+            <div className={`truncate font-medium text-[var(--af-text)] ${ultraTiny ? "text-[9px]" : "text-[11px]"}`}>
               {tiny ? `${index + 1}. ${clipDuration.toFixed(1)}s` : `${index + 1}. ${clip.title}`}
             </div>
           </div>
-          {!tiny ? (
+          {!tiny && !ultraTiny ? (
             <div className="shrink-0 text-[10px] text-[var(--af-muted)]">
               {clipDuration.toFixed(2)}s
             </div>
           ) : null}
-          <Button
-            size="small"
-            type="text"
-            danger
-            icon={<DeleteOutlined />}
-            className={`${active ? "" : "opacity-0 group-hover:opacity-100"} !h-6 !w-6 !min-w-6`}
-            onMouseDown={(event) => event.stopPropagation()}
-            onClick={(event) => {
-              event.stopPropagation();
-              onDelete(clip.id);
-            }}
-          />
+          {!ultraTiny ? (
+            <Button
+              size="small"
+              type="text"
+              danger
+              icon={<DeleteOutlined />}
+              className={`${active ? "" : "opacity-0 group-hover:opacity-100"} !h-6 !w-6 !min-w-6`}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete(clip.id);
+              }}
+            />
+          ) : null}
         </div>
-        {tiny ? (
+        {ultraTiny ? null : tiny ? (
           <div className="mt-auto flex items-center gap-1.5 text-[9px] text-[var(--af-muted)]">
             <span>{transitionLabel(clip.transition)}</span>
             {transitionOverlapSec > 0 ? <span>-{transitionOverlapSec.toFixed(2)}s</span> : null}
@@ -3973,7 +3988,7 @@ export function ClipComposer({
                                 {timelineSegments.map((segment) => {
                                   const clip = segment.clip;
                                   const duration = Math.max(0, clip.outSec - clip.inSec);
-                                  const width = Math.max(96, duration * timelinePixelsPerSecond);
+                                  const width = duration * timelinePixelsPerSecond;
                                   return (
                                     <SortableClipBlock
                                       key={clip.id}
